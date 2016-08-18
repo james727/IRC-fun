@@ -14,13 +14,19 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include "log.h"
+#include "list.h"
 #define MAX_NICK 20
 #define MAX_USER 50
+#define MAX_NICKS 100
 
 void set_up_socket(char *port);
 void process_user_message(struct sockaddr_in server, struct sockaddr_in client, char message[256], int sockfd, int *nick_rec, int *user_rec, char nick[], char user[]);
-int check_nick(char message[]);
+int check_nick(char nick[]);
+void add_nick(char nick[]);
 int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd);
+
+char *nicks[MAX_NICKS];
+int current_users = 0;
 
 int main(int argc, char *argv[])
 {
@@ -163,9 +169,13 @@ void process_user_message(struct sockaddr_in server, struct sockaddr_in client, 
       strcpy(nick, strtok(NULL, s));
       n = check_nick(nick);
       if (n == 0){
-        chilog(INFO,"ERROR\n");
+        *nick_rec = 0;
+        chilog(INFO,"NICK IN USE\n");
       }
-      else if (*nick_rec == 1 && *user_rec == 1){
+      else if (n == 1){
+        add_nick(nick);
+      }
+      if (*nick_rec == 1 && *user_rec == 1){
         send_response(server, client, 1, nick, user, sockfd);
       }
     }
@@ -187,8 +197,23 @@ void process_user_message(struct sockaddr_in server, struct sockaddr_in client, 
   }
 }
 
-int check_nick(char* nick){
-  return sizeof(nick);
+int check_nick(char nick[]){
+  int i;
+  for (i = 0; i < current_users; ++i){
+    if (strcmp(nick, nicks[i]) == 0){
+      return 0;
+    }
+  }
+  return 1;
+}
+
+void add_nick(char nick[]){
+  chilog(INFO, "ADDING NICK %s", nick);
+  int n = strlen(nick);
+  char *perm_nick = (char *) malloc(n);
+  strcpy(perm_nick, nick);
+  nicks[current_users] = perm_nick;
+  ++current_users;
 }
 
 int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd){
