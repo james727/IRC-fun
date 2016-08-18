@@ -1,7 +1,1 @@
-This repository provides the basic source code necessary to get started on the
-chirc project. It also includes several automated tests for students to verify
-the correctness of their implementation.
-
-Please see http://chi.cs.uchicago.edu/chirc/ for a specification of the chirc
-project, including specific assignments, instructions on how to build the 
-project, and on how to run the tests.
+Repository for my IRC client in C. Work in progress.

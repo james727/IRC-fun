@@ -9,8 +9,18 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "log.h"
+#define MAX_NICK 20
+#define MAX_USER 50
+
+void set_up_socket(char *port);
+void process_user_message(struct sockaddr_in server, struct sockaddr_in client, char message[256], int sockfd, int *nick_rec, int *user_rec, char nick[], char user[]);
+int check_nick(char message[]);
+int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd);
 
 int main(int argc, char *argv[])
 {
@@ -69,7 +79,146 @@ int main(int argc, char *argv[])
     }
 
 	/* Your code goes here */
+  set_up_socket(port);
 
 	return 0;
 }
 
+void set_up_socket(char *port){
+
+  /* initialize variables for socket system calls */
+  int sockfd, newsockfd; /* initialize file descriptors for the socket and accept system calls */
+  int portno; /* the port number to listen on */
+  int clilen; /* size of client address */
+  int n;  /* return value for read and write calls */
+  char buffer[256]; /* read characters from socket into this buffer */
+  struct sockaddr_in serv_addr, cli_addr; /* address structs for server and client */
+
+  /* set up the socket and server address */
+  sockfd = socket(AF_INET, SOCK_STREAM, 0); /* initialize socket */
+  bzero((char*) &serv_addr, sizeof(serv_addr)); /* zero out the serv_addr struct */
+  portno = atoi(port); /* convert port character string to integer */
+  serv_addr.sin_family = AF_INET; /* establish serv_addr values */
+  serv_addr.sin_port = htons(portno); /* set port number */
+  serv_addr.sin_addr.s_addr = INADDR_ANY; /* set address to localhost */
+
+  /* bind socket to port */
+  if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){ /* bind socket to serv_addr using sockfd */
+    chilog(INFO, "Error binding to socket\n");
+  }
+
+  /* listen and accept socket connection */
+  listen(sockfd, 5); /* listen to socket; 5 is max backlog queue (5 is max for most systems) */
+  clilen = sizeof(cli_addr);
+
+  newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen); /* wait for an incoming connection */
+  if (newsockfd < 0){
+    chilog (INFO, "Error accepting socket connection\n");
+  }
+
+  int nick_rec = 0;
+  int user_rec = 0;
+  char nick[MAX_NICK];
+  char user[MAX_USER];
+  bzero(nick, MAX_NICK);
+  bzero(user, MAX_USER);
+
+  while (1){
+
+    /* read from the socket */
+    bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
+    n = read(newsockfd, buffer, 255); /* read from the socket */
+    if (n < 0){
+      chilog(INFO, "Error reading from socket");
+    }
+
+    process_user_message(serv_addr, cli_addr, buffer, newsockfd, &nick_rec, &user_rec, nick, user);
+    chilog(INFO,"in main loop nick = %s user = %s\n", nick, user);
+
+    if (n < 0){
+      chilog(INFO, "Error writing to socket");
+    }
+
+  }
+
+}
+
+void process_user_message(struct sockaddr_in server, struct sockaddr_in client, char message[256], int sockfd, int *nick_rec, int *user_rec, char nick[], char user[]){
+
+  int i;
+  for (i = 0; i < 256; ++i){
+    if (message[i] == '\r' && message[i+1] == '\n'){
+      message[i] = '\0';
+    }
+  }
+
+  const char s[2] = " ";
+  char *token;
+  token = strtok(message, s);
+  int n;
+
+  while (token != NULL){
+    if (strcmp(token, "NICK") == 0){
+      *nick_rec = 1;
+      strcpy(nick, strtok(NULL, s));
+      n = check_nick(nick);
+      if (n == 0){
+        chilog(INFO,"ERROR\n");
+      }
+      else if (*nick_rec == 1 && *user_rec == 1){
+        send_response(server, client, 1, nick, user, sockfd);
+      }
+    }
+    else if (strcmp(token, "USER") == 0){
+      *user_rec = 1;
+      strcpy(user, strtok(NULL, s));
+      if (*nick_rec == 1 && *user_rec == 1){
+        chilog(INFO, "%s %s", nick, user);
+        send_response(server, client, 1, nick, user, sockfd);
+      }
+    }
+    else if (strcmp(token, "EXIT") == 0){
+      close(sockfd);
+    }
+    else {
+      chilog(INFO, "%s", token);
+    }
+    token = strtok(NULL, s);
+  }
+}
+
+int check_nick(char* nick){
+  return sizeof(nick);
+}
+
+int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd){
+  /* get ip addresses */
+  char s_addr[INET_ADDRSTRLEN];
+  char d_addr[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &(sender.sin_addr), s_addr, INET_ADDRSTRLEN);
+  inet_ntop(AF_INET, &(dest.sin_addr), d_addr, INET_ADDRSTRLEN);
+
+  /* set up msg code */
+  char code[4];
+  sprintf(code, "%03d", msg_code);
+
+  /* set up user id */
+  int uid_l = strlen(nick)+ 1 + strlen(user)+ 1 + strlen(d_addr);
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", nick, user, d_addr);
+  char msg[39];
+
+  if (msg_code == 1){
+    /* compose welcome message */
+    sprintf(msg, ":Welcome to the Internet Relay Network");
+  }
+
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen(nick) + 1 + 38 + 1 + uid_l + 1;
+  char buffer[s_final_msg];
+  bzero(buffer, s_final_msg);
+
+  sprintf(buffer, ":%s %s %s %s %s\n", s_addr, code, nick, msg, uid);
+  send(sockpd, buffer, s_final_msg, 0);
+
+  return 0;
+}
