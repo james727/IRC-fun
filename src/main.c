@@ -21,7 +21,8 @@
 int set_up_socket(void);
 void bind_to_port(int sockfd, char *port);
 void listen_to_port(int sockfd);
-void handle_new_connection (void *newsockfd);
+void *handle_new_connection (void *newsockfd);
+struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr);
 void process_user_message(struct new_connection conn, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]);
 int check_nick(char nick[]);
 void add_nick(char nick[]);
@@ -119,7 +120,6 @@ void listen_to_port(int sockfd){
 
   int clilen; /* size of client address */
   struct sockaddr_in cli_addr; /* address structs for server and client */
-  struct new_connection current_conn;
   int newsockfd; /* socket id for new connections */
 
   /* listen to socket and spawn new threads as needed */
@@ -127,18 +127,19 @@ void listen_to_port(int sockfd){
     listen(sockfd, 5); /* listen to socket; 5 is max backlog queue (5 is max for most systems) */
     clilen = sizeof(cli_addr);
     newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen); /* wait for an incoming connection */
-    current_conn.newsockfd = newsockfd; /* add to the connection struct */
-    current_conn.client_addr = cli_addr; /* add to the connection struct */
+    struct new_connection *current_conn = create_new_connection(newsockfd, cli_addr);
     if (newsockfd < 0){ /* check that things are working properly (hopefully) */
       chilog (INFO, "Error accepting socket connection\n");
     }
-    handle_new_connection((void*) &current_conn); /* pass to handle new connection - will eventually be a separate thread */
+    pthread_t new_thread;
+    pthread_create(&new_thread, NULL, handle_new_connection, (void*) current_conn);
   }
 
 }
 
-void handle_new_connection(void *connection){
+void *handle_new_connection(void *connection){
   struct new_connection current_conn = *(struct new_connection*) connection;
+  chilog(INFO, "Socket id: %d\n", *(current_conn.newsockfd));
   char buffer[256]; /* read characters from socket into this buffer */
   int nick_rec = 0;
   int user_rec = 0;
@@ -148,22 +149,24 @@ void handle_new_connection(void *connection){
   bzero(user, MAX_USER);
   int n;
   while (1){
-
     /* read from the socket */
     bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
-    n = read(current_conn.newsockfd, buffer, 255); /* read from the socket */
+    n = read(*(current_conn.newsockfd), buffer, 255); /* read from the socket */
     if (n < 0){
-      chilog(INFO, "Error reading from socket");
+      /*chilog(INFO, "Error reading from socket");*/
     }
 
     process_user_message(current_conn, buffer, &nick_rec, &user_rec, nick, user);
-    chilog(INFO,"in main loop nick = %s user = %s\n", nick, user);
+    /*chilog(INFO,"in main loop nick = %s user = %s\n", nick, user);*/
 
     if (n < 0){
-      chilog(INFO, "Error writing to socket");
+      /*chilog(INFO, "Error writing to socket");*/
     }
 
   }
+
+  return NULL;
+
 }
 
 void process_user_message(struct new_connection connection, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]){
@@ -193,7 +196,7 @@ void process_user_message(struct new_connection connection, char message[256], i
         add_nick(nick);
       }
       if (*nick_rec == 1 && *user_rec == 1){
-        send_response(server_addr, connection.client_addr, 1, nick, user, connection.newsockfd);
+        send_response(server_addr, *(connection.client_addr), 1, nick, user, *(connection.newsockfd));
       }
     }
     else if (strcmp(token, "USER") == 0){
@@ -201,17 +204,36 @@ void process_user_message(struct new_connection connection, char message[256], i
       strcpy(user, strtok(NULL, s));
       if (*nick_rec == 1 && *user_rec == 1){
         chilog(INFO, "%s %s", nick, user);
-        send_response(server_addr, connection.client_addr, 1, nick, user, connection.newsockfd);
+        send_response(server_addr, *(connection.client_addr), 1, nick, user, *(connection.newsockfd));
       }
     }
     else if (strcmp(token, "EXIT") == 0){
-      close(connection.newsockfd);
+      close(*(connection.newsockfd));
     }
     else {
       chilog(INFO, "%s", token);
     }
     token = strtok(NULL, s);
   }
+}
+
+struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr){
+  struct new_connection *user = malloc(sizeof(struct new_connection)); /* allocate space for the struct */
+
+  /* space for member variables */
+  user -> newsockfd = malloc(sizeof(int));
+  user -> client_addr = malloc(sizeof(client_addr));
+  user -> nick = malloc(MAX_NICK);
+  user -> user = malloc(MAX_USER);
+
+  /* zero out nick and user */
+  bzero((*user).nick, MAX_NICK);
+  bzero((*user).user, MAX_USER);
+
+  /* copy arguments to member variables and return */
+  *((*user).newsockfd) = newsockfd;
+  memcpy((*user).client_addr, &client_addr, sizeof(struct sockaddr_in));
+  return user;
 }
 
 int check_nick(char nick[]){
