@@ -1,9 +1,6 @@
 /*
- *
- *  CMSC 23300 / 33300 - Networks and Distributed Systems
- *
- *  main() code for chirc project
- *
+ *  IRC server project
+ *  James Katz, 2016
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +10,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include "log.h"
 #include "list.h"
 #define MAX_NICK 20
