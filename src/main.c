@@ -150,7 +150,6 @@ void *handle_new_connection(void *connection){
     bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
     n = read(*((*current_conn).newsockfd), buffer, 255); /* read from the socket */
     if (n < 0){
-      chilog(INFO, "Error reading from socket");
       break;
     }
 
@@ -262,7 +261,7 @@ void add_nick(struct new_connection *user_conn){
 
 void close_connection(struct new_connection *user_conn){
   chilog(INFO, "Closing connection for NICK %s\n", (*user_conn).nick);
-  delete_element(connections, (*user_conn).nick);
+  delete_element(&connections, (*user_conn).nick);
   chilog(INFO, "Printing connections...\n");
   print_list(connections);
   free(user_conn);

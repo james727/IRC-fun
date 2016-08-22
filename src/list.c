@@ -49,16 +49,18 @@ int search(struct linked_list list, char search_term[]){
   }
 }
 
-void delete_element(struct linked_list list, char name_to_delete[]){
-  struct node *pointer1 = list.head;
+void delete_element(struct linked_list *list, char *name_to_delete){
+  struct node *pointer1 = (*list).head;
   if (strcmp(name_to_delete, (*(*pointer1).connected_user).nick) == 0){
-    list.head = (*pointer1).next;
+    chilog(INFO, "Name found for deletion\n");
+    (*list).head = (*pointer1).next;
     free(pointer1);
   }
   else{
     struct node *pointer2 = (*pointer1).next;
     while (pointer2 != NULL){
       if (strcmp(name_to_delete, (*(*pointer2).connected_user).nick) == 0){
+        chilog(INFO, "Name found for deletion\n");
         (*pointer1).next = (*pointer2).next;
         free(pointer2);
       }

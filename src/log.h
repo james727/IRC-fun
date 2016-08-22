@@ -1,7 +1,7 @@
 /*
  *  Logging functions
  *
- *  Use these functions to print log messages. Each message has an
+ *  Logging messages. Each message has an
  *  associated log level:
  *
  *  CRITICAL: A critical unrecoverable error
