@@ -13,18 +13,23 @@
 #include <pthread.h>
 #include "log.h"
 #include "list.h"
+#include "connection.h"
 #define MAX_NICK 20
 #define MAX_USER 50
 #define MAX_NICKS 100
 
-void set_up_socket(char *port);
-void process_user_message(struct sockaddr_in server, struct sockaddr_in client, char message[256], int sockfd, int *nick_rec, int *user_rec, char nick[], char user[]);
+int set_up_socket(void);
+void bind_to_port(int sockfd, char *port);
+void listen_to_port(int sockfd);
+void handle_new_connection (void *newsockfd);
+void process_user_message(struct new_connection conn, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]);
 int check_nick(char nick[]);
 void add_nick(char nick[]);
 int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd);
 
 char *nicks[MAX_NICKS];
 int current_users = 0;
+struct sockaddr_in server_addr;
 
 int main(int argc, char *argv[])
 {
@@ -82,61 +87,76 @@ int main(int argc, char *argv[])
         break;
     }
 
-	/* Your code goes here */
-  set_up_socket(port);
+  int sockfd = set_up_socket();
+  bind_to_port(sockfd, port);
+  listen_to_port(sockfd);
 
 	return 0;
 }
 
-void set_up_socket(char *port){
-
-  /* initialize variables for socket system calls */
-  int sockfd, newsockfd; /* initialize file descriptors for the socket and accept system calls */
-  int portno; /* the port number to listen on */
-  int clilen; /* size of client address */
-  int n;  /* return value for read and write calls */
-  char buffer[256]; /* read characters from socket into this buffer */
-  struct sockaddr_in serv_addr, cli_addr; /* address structs for server and client */
-
-  /* set up the socket and server address */
+int set_up_socket(void){
+  int sockfd; /* initialize file descriptor for our new socket */
   sockfd = socket(AF_INET, SOCK_STREAM, 0); /* initialize socket */
-  bzero((char*) &serv_addr, sizeof(serv_addr)); /* zero out the serv_addr struct */
+  return sockfd;
+}
+
+void bind_to_port(int sockfd, char *port){
+  int portno; /* the port number to listen on */
+  /*struct sockaddr_in serv_addr; address structs for server and client */
+  bzero((char*) &server_addr, sizeof(server_addr)); /* zero out the serv_addr struct */
   portno = atoi(port); /* convert port character string to integer */
-  serv_addr.sin_family = AF_INET; /* establish serv_addr values */
-  serv_addr.sin_port = htons(portno); /* set port number */
-  serv_addr.sin_addr.s_addr = INADDR_ANY; /* set address to localhost */
+  server_addr.sin_family = AF_INET; /* establish serv_addr values */
+  server_addr.sin_port = htons(portno); /* set port number */
+  server_addr.sin_addr.s_addr = INADDR_ANY; /* set address to localhost */
 
   /* bind socket to port */
-  if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){ /* bind socket to serv_addr using sockfd */
+  if (bind(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0){ /* bind socket to serv_addr using sockfd */
     chilog(INFO, "Error binding to socket\n");
   }
+}
 
-  /* listen and accept socket connection */
-  listen(sockfd, 5); /* listen to socket; 5 is max backlog queue (5 is max for most systems) */
-  clilen = sizeof(cli_addr);
+void listen_to_port(int sockfd){
 
-  newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen); /* wait for an incoming connection */
-  if (newsockfd < 0){
-    chilog (INFO, "Error accepting socket connection\n");
+  int clilen; /* size of client address */
+  struct sockaddr_in cli_addr; /* address structs for server and client */
+  struct new_connection current_conn;
+  int newsockfd; /* socket id for new connections */
+
+  /* listen to socket and spawn new threads as needed */
+  while (1) {
+    listen(sockfd, 5); /* listen to socket; 5 is max backlog queue (5 is max for most systems) */
+    clilen = sizeof(cli_addr);
+    newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen); /* wait for an incoming connection */
+    current_conn.newsockfd = newsockfd; /* add to the connection struct */
+    current_conn.client_addr = cli_addr; /* add to the connection struct */
+    if (newsockfd < 0){ /* check that things are working properly (hopefully) */
+      chilog (INFO, "Error accepting socket connection\n");
+    }
+    handle_new_connection((void*) &current_conn); /* pass to handle new connection - will eventually be a separate thread */
   }
 
+}
+
+void handle_new_connection(void *connection){
+  struct new_connection current_conn = *(struct new_connection*) connection;
+  char buffer[256]; /* read characters from socket into this buffer */
   int nick_rec = 0;
   int user_rec = 0;
   char nick[MAX_NICK];
   char user[MAX_USER];
   bzero(nick, MAX_NICK);
   bzero(user, MAX_USER);
-
+  int n;
   while (1){
 
     /* read from the socket */
     bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
-    n = read(newsockfd, buffer, 255); /* read from the socket */
+    n = read(current_conn.newsockfd, buffer, 255); /* read from the socket */
     if (n < 0){
       chilog(INFO, "Error reading from socket");
     }
 
-    process_user_message(serv_addr, cli_addr, buffer, newsockfd, &nick_rec, &user_rec, nick, user);
+    process_user_message(current_conn, buffer, &nick_rec, &user_rec, nick, user);
     chilog(INFO,"in main loop nick = %s user = %s\n", nick, user);
 
     if (n < 0){
@@ -144,10 +164,9 @@ void set_up_socket(char *port){
     }
 
   }
-
 }
 
-void process_user_message(struct sockaddr_in server, struct sockaddr_in client, char message[256], int sockfd, int *nick_rec, int *user_rec, char nick[], char user[]){
+void process_user_message(struct new_connection connection, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]){
 
   int i;
   for (i = 0; i < 256; ++i){
@@ -174,7 +193,7 @@ void process_user_message(struct sockaddr_in server, struct sockaddr_in client, 
         add_nick(nick);
       }
       if (*nick_rec == 1 && *user_rec == 1){
-        send_response(server, client, 1, nick, user, sockfd);
+        send_response(server_addr, connection.client_addr, 1, nick, user, connection.newsockfd);
       }
     }
     else if (strcmp(token, "USER") == 0){
@@ -182,11 +201,11 @@ void process_user_message(struct sockaddr_in server, struct sockaddr_in client, 
       strcpy(user, strtok(NULL, s));
       if (*nick_rec == 1 && *user_rec == 1){
         chilog(INFO, "%s %s", nick, user);
-        send_response(server, client, 1, nick, user, sockfd);
+        send_response(server_addr, connection.client_addr, 1, nick, user, connection.newsockfd);
       }
     }
     else if (strcmp(token, "EXIT") == 0){
-      close(sockfd);
+      close(connection.newsockfd);
     }
     else {
       chilog(INFO, "%s", token);
