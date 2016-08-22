@@ -23,10 +23,11 @@ void bind_to_port(int sockfd, char *port);
 void listen_to_port(int sockfd);
 void *handle_new_connection (void *newsockfd);
 struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr);
-void process_user_message(struct new_connection conn, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]);
+void process_user_message(struct new_connection conn, char message[256]);
+int send_greeting(struct new_connection conn);
 int check_nick(char nick[]);
+int check_connection_complete(struct new_connection conn);
 void add_nick(char nick[]);
-int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd);
 
 char *nicks[MAX_NICKS];
 int current_users = 0;
@@ -139,29 +140,18 @@ void listen_to_port(int sockfd){
 
 void *handle_new_connection(void *connection){
   struct new_connection current_conn = *(struct new_connection*) connection;
-  chilog(INFO, "Socket id: %d\n", *(current_conn.newsockfd));
   char buffer[256]; /* read characters from socket into this buffer */
-  int nick_rec = 0;
-  int user_rec = 0;
-  char nick[MAX_NICK];
-  char user[MAX_USER];
-  bzero(nick, MAX_NICK);
-  bzero(user, MAX_USER);
   int n;
   while (1){
+    
     /* read from the socket */
     bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
     n = read(*(current_conn.newsockfd), buffer, 255); /* read from the socket */
     if (n < 0){
-      /*chilog(INFO, "Error reading from socket");*/
+      chilog(INFO, "Error reading from socket");
     }
 
-    process_user_message(current_conn, buffer, &nick_rec, &user_rec, nick, user);
-    /*chilog(INFO,"in main loop nick = %s user = %s\n", nick, user);*/
-
-    if (n < 0){
-      /*chilog(INFO, "Error writing to socket");*/
-    }
+    process_user_message(current_conn, buffer); /* send the buffer for processing */
 
   }
 
@@ -169,7 +159,7 @@ void *handle_new_connection(void *connection){
 
 }
 
-void process_user_message(struct new_connection connection, char message[256], int *nick_rec, int *user_rec, char nick[], char user[]){
+void process_user_message(struct new_connection connection, char message[256]){
 
   int i;
   for (i = 0; i < 256; ++i){
@@ -184,36 +174,53 @@ void process_user_message(struct new_connection connection, char message[256], i
   int n;
 
   while (token != NULL){
+
+    /* NICK command */
     if (strcmp(token, "NICK") == 0){
-      *nick_rec = 1;
-      strcpy(nick, strtok(NULL, s));
-      n = check_nick(nick);
+      /* copy nick to connection struct */
+      strcpy(connection.nick, strtok(NULL, s));
+
+      /* check if nick exists already */
+      n = check_nick(connection.nick);
       if (n == 0){
-        *nick_rec = 0;
+        bzero(connection.nick, MAX_NICK);
         chilog(INFO,"NICK IN USE\n");
       }
       else if (n == 1){
-        add_nick(nick);
+        add_nick(connection.nick);
       }
-      if (*nick_rec == 1 && *user_rec == 1){
-        send_response(server_addr, *(connection.client_addr), 1, nick, user, *(connection.newsockfd));
+
+      /* check if both nick and user have been received */
+      if (check_connection_complete(connection)==1){
+        send_greeting(connection);
       }
+
     }
+
+    /* USER command */
     else if (strcmp(token, "USER") == 0){
-      *user_rec = 1;
-      strcpy(user, strtok(NULL, s));
-      if (*nick_rec == 1 && *user_rec == 1){
-        chilog(INFO, "%s %s", nick, user);
-        send_response(server_addr, *(connection.client_addr), 1, nick, user, *(connection.newsockfd));
+      /* copy the user to the connection */
+      strcpy(connection.user, strtok(NULL, s));
+
+      /* check if both user and nick have been received */
+      if (check_connection_complete(connection)==1){
+        send_greeting(connection);
       }
+
     }
+
+    /* EXIT command */
     else if (strcmp(token, "EXIT") == 0){
       close(*(connection.newsockfd));
     }
+
+    /* OTHER commands - to be built */
     else {
       chilog(INFO, "%s", token);
     }
+
     token = strtok(NULL, s);
+
   }
 }
 
@@ -255,34 +262,39 @@ void add_nick(char nick[]){
   ++current_users;
 }
 
-int send_response(struct sockaddr_in sender, struct sockaddr_in dest, int msg_code,  char nick[], char user[], int sockpd){
+int check_connection_complete(struct new_connection connection){
+  if (*(connection.nick) != '\0' && *(connection.user) != '\0'){
+    return 1;
+  }
+  return 0;
+}
+
+int send_greeting(struct new_connection conn){
   /* get ip addresses */
   char s_addr[INET_ADDRSTRLEN];
   char d_addr[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &(sender.sin_addr), s_addr, INET_ADDRSTRLEN);
-  inet_ntop(AF_INET, &(dest.sin_addr), d_addr, INET_ADDRSTRLEN);
+  inet_ntop(AF_INET, &(server_addr.sin_addr), s_addr, INET_ADDRSTRLEN);
+  inet_ntop(AF_INET, &((*conn.client_addr).sin_addr), d_addr, INET_ADDRSTRLEN);
 
   /* set up msg code */
   char code[4];
-  sprintf(code, "%03d", msg_code);
+  sprintf(code, "%03d", 1);
 
   /* set up user id */
-  int uid_l = strlen(nick)+ 1 + strlen(user)+ 1 + strlen(d_addr);
+  int uid_l = strlen(conn.nick)+ 1 + strlen(conn.user)+ 1 + strlen(d_addr);
   char uid[uid_l];
-  sprintf(uid, "%s!%s@%s", nick, user, d_addr);
+  sprintf(uid, "%s!%s@%s", conn.nick, conn.user, d_addr);
   char msg[39];
 
-  if (msg_code == 1){
-    /* compose welcome message */
-    sprintf(msg, ":Welcome to the Internet Relay Network");
-  }
+  /* compose welcome message */
+  sprintf(msg, ":Welcome to the Internet Relay Network");
 
-  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen(nick) + 1 + 38 + 1 + uid_l + 1;
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen(conn.nick) + 1 + 38 + 1 + uid_l + 1;
   char buffer[s_final_msg];
   bzero(buffer, s_final_msg);
 
-  sprintf(buffer, ":%s %s %s %s %s\n", s_addr, code, nick, msg, uid);
-  send(sockpd, buffer, s_final_msg, 0);
+  sprintf(buffer, ":%s %s %s %s %s\n", s_addr, code, conn.nick, msg, uid);
+  send(*(conn.newsockfd), buffer, s_final_msg, 0);
 
   return 0;
 }
