@@ -25,13 +25,16 @@ void listen_to_port(int sockfd);
 void *handle_new_connection (void *newsockfd);
 struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr, pthread_t *thread);
 void process_user_message(struct new_connection *conn, char message[256]);
-int send_greeting(struct new_connection *conn);
+int send_greetings(struct new_connection *conn);
+int send_welcome(struct new_connection *conn);
+int send_yourhost(struct new_connection *conn);
+int send_myinfo(struct new_connection *conn);
 int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
 void add_nick(struct new_connection *conn);
 void close_connection(struct new_connection *user_conn);
 int send_message(struct new_connection *conn, char *message_body, int message_code);
-int handle_quit(struct new_connection *conn, char *message);
+int handle_exit(struct new_connection *conn, char *message);
 int handle_nick(struct new_connection *conn, char *nick);
 int handle_user(struct new_connection *conn, char *user);
 
@@ -41,15 +44,11 @@ struct sockaddr_in server_addr;
 struct linked_list connections;
 
 
-typedef void (*CmdHandler)(char *);
+typedef int (*CmdHandler)(struct new_connection *, char *);
 
-/*#define CMD_COUNT 3
+#define CMD_COUNT 3
 char *commands[] = {"NICK", "USER", "EXIT"};
 CmdHandler handlers[] = {handle_nick, handle_user, handle_exit};
-
-void handle_nick(char *args) {
-  // do stuff
-}*/
 
 int main(int argc, char *argv[])
 {
@@ -201,28 +200,10 @@ void process_user_message(struct new_connection *connection, char message[256]){
 
   /* loop through until a command is hit */
   while (token != NULL){
-    /*int i;
-    for (i = 0; i < CMD_COUNT; ++i){
+    for (int i = 0; i < CMD_COUNT; ++i){
       if (strcmp(token, commands[i]) == 0){
-        handlers[i](strtok_r(NULL, s, &save));
+        handlers[i](connection, save);
       }
-    }*/
-
-    /* NICK command */
-    if (strcmp(token, "NICK") == 0){
-      handle_nick(connection, strtok_r(NULL, s, &save));
-    }
-    /* USER command */
-    else if (strcmp(token, "USER") == 0){
-      handle_user(connection, strtok_r(NULL, s, &save));
-    }
-    /* EXIT command */
-    else if (strcmp(token, "EXIT") == 0){
-      handle_quit(connection, save);
-    }
-    /* OTHER commands - to be built */
-    else {
-      chilog(INFO, "%s", token);
     }
     token = strtok(NULL, s);
   }
@@ -278,12 +259,41 @@ int check_connection_complete(struct new_connection *connection){
   return 0;
 }
 
-int send_greeting(struct new_connection *conn){
+int send_welcome(struct new_connection *conn){
   /* compose welcome message */
-  char msg[39];
-  sprintf(msg, ":Welcome to the Internet Relay Network");
-  send_message(conn, msg, 1);
+  char *msg = ":Welcome to the Internet Relay Network";
 
+  /* set up host message */
+  char host_addr[INET_ADDRSTRLEN];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  memcpy(host_addr, (*client_host).h_name, strlen((*client_host).h_name));
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr);
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  /* set up message */
+  int msglen = strlen(msg) + 1 + strlen(uid);
+  char finalmsg[msglen];
+  sprintf(finalmsg, "%s %s", msg, uid);
+  send_message(conn, finalmsg, 1);
+
+  return 0;
+}
+
+int send_myinfo(struct new_connection *conn){
+  return 0;
+}
+
+int send_yourhost(struct new_connection *conn){
+  return 0;
+}
+
+int send_greetings(struct new_connection *conn){
+  send_welcome(conn);
+  send_myinfo(conn);
+  send_yourhost(conn);
   return 0;
 }
 
@@ -295,7 +305,6 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
   inet_ntop(AF_INET, &((*(*conn).client_addr).sin_addr), d_addr, INET_ADDRSTRLEN);
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
   if (client_host != NULL){
-    chilog(INFO, "Successfully resolved host\n");
     memcpy(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
   }
 
@@ -303,73 +312,77 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
   char code[4];
   sprintf(code, "%03d", message_code);
 
-  /* set up user id */
-  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(d_addr);
-  char uid[uid_l];
-  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, d_addr);
-
   /* set up and write final message */
-  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + strlen(message_body) + 1 + uid_l + 2;
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + strlen(message_body) + 2;
   char buffer[s_final_msg];
   bzero(buffer, s_final_msg);
-  sprintf(buffer, ":%s %s %s %s %s\r\n", s_addr, code, (*conn).nick, message_body, uid);
+  sprintf(buffer, ":%s %s %s %s\r\n", s_addr, code, (*conn).nick, message_body);
   send(*((*conn).newsockfd), buffer, s_final_msg, 0);
 
   return 0;
 
 }
 
-int handle_quit(struct new_connection *conn, char *message){
+int handle_exit(struct new_connection *conn, char *message){
+  chilog(INFO, "Exiting\n");
   /* get hostname */
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
-
   /* compose and send message */
+  if (message == NULL){
+    message = "Client Quit";
+  }
   int msglen = 13 + strlen((*client_host).h_name) + 1 + strlen(message);
   char msg[msglen];
   sprintf(msg, "Closing link %s %s", (*client_host).h_name, message);
   send_message(conn, msg, 0);
-
   /* close connection */
   close_connection(conn);
   return 0;
-
 }
 
-int handle_nick(struct new_connection *conn, char *nick){
-  /* copy nick to connection struct */
-  strcpy((*conn).nick, nick);
-
+int handle_nick(struct new_connection *conn, char *nick_params){
+  /* pull off nick */
+  const char s[2] = " ";
+  char *save;
+  char *nick = strtok_r(nick_params, s, &save);
   /* check if nick exists already */
-  int n = check_nick((*conn).nick);
-  if (n == 1){
+  if (check_nick(nick) == 1){
     char msg[28];
     sprintf(msg, ":Nickname is already in use");
     send_message(conn, msg, 0);
-    bzero((*conn).nick, MAX_NICK);
   }
-  else if (n == 0){
+  else{
+    if (*((*conn).nick) != '\0'){
+      /* copy nick to connection struct */
+      strcpy((*conn).nick, nick);
+      return 0;
+    }
+    strcpy((*conn).nick, nick);
     add_nick(conn);
-  }
-  /* check if both nick and user have been received */
-  if (check_connection_complete(conn)==1){
-    send_greeting(conn);
+    /* check if both nick and user have been received */
+    if (check_connection_complete(conn)==1){
+      send_greetings(conn);
+    }
   }
   return 0;
 }
 
-int handle_user(struct new_connection *conn, char *user){
+int handle_user(struct new_connection *conn, char *user_params){
+  /* pull off user */
+  const char s[2] = " ";
+  char *save;
+  char *user = strtok_r(user_params, s, &save);
   /* check if user command has already been sent */
-  if ((*conn).user != 0){
+  if (*((*conn).user) != '\0'){
     char *msg = ":Unauthorized command (already registered)";
     send_message(conn, msg, 0);
   }
   else{
     /* copy the user to the connection */
     strcpy((*conn).user, user);
-
     /* check if both user and nick have been received */
     if (check_connection_complete(conn)==1){
-      send_greeting(conn);
+      send_greetings(conn);
     }
   }
   return 0;
