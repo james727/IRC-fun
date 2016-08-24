@@ -30,6 +30,7 @@ int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
 void add_nick(struct new_connection *conn);
 void close_connection(struct new_connection *user_conn);
+int send_message(struct new_connection *conn, char *message_body, int message_code);
 
 int current_users = 0;
 struct sockaddr_in server_addr;
@@ -240,7 +241,7 @@ void process_user_message(struct new_connection *connection, char message[256]){
     }
 
     /* EXIT command */
-    else if (strcmp(token, "EXIT") == 0){
+    else if (strcmp(token, "QUIT") == 0){
       close_connection(connection);
     }
 
@@ -306,7 +307,16 @@ int check_connection_complete(struct new_connection *connection){
 }
 
 int send_greeting(struct new_connection *conn){
-  /* get ip addresses */
+  /* compose welcome message */
+  char msg[39];
+  sprintf(msg, ":Welcome to the Internet Relay Network");
+  send_message(conn, msg, 1);
+
+  return 0;
+}
+
+int send_message(struct new_connection *conn, char *message_body, int message_code){
+  /* get ip addresses and hosts */
   char s_addr[INET_ADDRSTRLEN];
   char d_addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(server_addr.sin_addr), s_addr, INET_ADDRSTRLEN);
@@ -317,25 +327,22 @@ int send_greeting(struct new_connection *conn){
     memcpy(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
   }
 
-
   /* set up msg code */
   char code[4];
-  sprintf(code, "%03d", 1);
+  sprintf(code, "%03d", message_code);
 
   /* set up user id */
   int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(d_addr);
   char uid[uid_l];
   sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, d_addr);
 
-  /* compose welcome message */
-  char msg[39];
-  sprintf(msg, ":Welcome to the Internet Relay Network");
-  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + 38 + 1 + uid_l + 2;
+  /* set up and write final message */
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + strlen(message_body) + 1 + uid_l + 2;
   char buffer[s_final_msg];
   bzero(buffer, s_final_msg);
-
-  sprintf(buffer, ":%s %s %s %s %s\r\n", s_addr, code, (*conn).nick, msg, uid);
+  sprintf(buffer, ":%s %s %s %s %s\r\n", s_addr, code, (*conn).nick, message_body, uid);
   send(*((*conn).newsockfd), buffer, s_final_msg, 0);
 
   return 0;
+
 }
