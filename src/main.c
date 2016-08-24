@@ -155,37 +155,32 @@ void listen_to_port(int sockfd){
 
 void *handle_new_connection(void *connection){
   struct new_connection *current_conn = (struct new_connection*) connection;
-  const int BUF_SIZE = 256;
+  const int BUF_SIZE = 512;
   char buffer[BUF_SIZE]; /* read characters from socket into this buffer */
   int readpos = 0;
+  int characters_read;
+
   while (1){
-    int n;
-    /* read from the socket */
-    // TODO: protect from over-long messages
-    n = read(*((*current_conn).newsockfd), &buffer[readpos], BUF_SIZE-readpos); /* read from the socket */
-    if (n < 0){
+    /* read from the socket and increment readpos */
+    characters_read = read(*((*current_conn).newsockfd), &buffer[readpos], BUF_SIZE-readpos); /* read from the socket */
+    if (characters_read < 0){
       break;
     }
-    readpos += n;
-    int i;
-    for (i = readpos-n; i < readpos-1; ++i){
+    readpos += characters_read;
+    chilog(INFO, "%s\n", buffer);
+
+    /* loop through chars starting at beginning of last readpos-1 (to check if there was a \r) */
+    for (int i = readpos-characters_read-1; i < readpos-1; ++i){
       if (buffer[i] == '\r' && buffer[i+1] == '\n'){
         buffer[i] = '\0';
+        buffer[i+1] = ' ';
         process_user_message(current_conn, buffer); /* send the buffer for processing */
-
-        /* move remainder of buffer to beginning */
-        memmove(buffer, buffer+i+2, readpos-(i+2));
+        memmove(buffer, buffer+i+2, readpos-(i+2)); /* move remainder of buffer to beginning */
         readpos = readpos-(i+2);
       }
     }
-
-    /*process_user_message(current_conn, buffer);*/
-
-
   }
-
   return NULL;
-
 }
 
 /*char *parse_args(char *arg_start){
@@ -319,7 +314,7 @@ int send_greeting(struct new_connection *conn){
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
   if (client_host != NULL){
     chilog(INFO, "Successfully resolved host\n");
-    sprintf(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
+    memcpy(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
   }
 
 
