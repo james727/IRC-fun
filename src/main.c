@@ -11,6 +11,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <netdb.h>
 #include "log.h"
 #include "list.h"
 
@@ -33,6 +34,18 @@ void close_connection(struct new_connection *user_conn);
 int current_users = 0;
 struct sockaddr_in server_addr;
 struct linked_list connections;
+
+void handle_nick(char *args);
+
+typedef void (*CmdHandler)(char *);
+
+/*#define CMD_COUNT 3
+char *commands[] = {"NICK", "USER", "EXIT"};
+CmdHandler handlers[] = {handle_nick, handle_user, handle_exit};
+
+void handle_nick(char *args) {
+  // do stuff
+}*/
 
 int main(int argc, char *argv[])
 {
@@ -121,7 +134,7 @@ void bind_to_port(int sockfd, char *port){
 
 void listen_to_port(int sockfd){
 
-  int clilen; /* size of client address */
+  socklen_t clilen; /* size of client address */
   struct sockaddr_in cli_addr; /* address structs for server and client */
   int newsockfd; /* socket id for new connections */
 
@@ -142,18 +155,32 @@ void listen_to_port(int sockfd){
 
 void *handle_new_connection(void *connection){
   struct new_connection *current_conn = (struct new_connection*) connection;
-  char buffer[256]; /* read characters from socket into this buffer */
-  int n;
+  const int BUF_SIZE = 256;
+  char buffer[BUF_SIZE]; /* read characters from socket into this buffer */
+  int readpos = 0;
   while (1){
-
+    int n;
     /* read from the socket */
-    bzero(buffer, 256); /* zero out buffer prior to writing the incoming message */
-    n = read(*((*current_conn).newsockfd), buffer, 255); /* read from the socket */
+    // TODO: protect from over-long messages
+    n = read(*((*current_conn).newsockfd), &buffer[readpos], BUF_SIZE-readpos); /* read from the socket */
     if (n < 0){
       break;
     }
+    readpos += n;
+    int i;
+    for (i = readpos-n; i < readpos-1; ++i){
+      if (buffer[i] == '\r' && buffer[i+1] == '\n'){
+        buffer[i] = '\0';
+        process_user_message(current_conn, buffer); /* send the buffer for processing */
 
-    process_user_message(current_conn, buffer); /* send the buffer for processing */
+        /* move remainder of buffer to beginning */
+        memmove(buffer, buffer+i+2, readpos-(i+2));
+        readpos = readpos-(i+2);
+      }
+    }
+
+    /*process_user_message(current_conn, buffer);*/
+
 
   }
 
@@ -161,26 +188,32 @@ void *handle_new_connection(void *connection){
 
 }
 
-void process_user_message(struct new_connection *connection, char message[256]){
+/*char *parse_args(char *arg_start){
+  const char s[2] = " ";
 
-  int i;
-  for (i = 0; i < 256; ++i){
-    if (message[i] == '\r' && message[i+1] == '\n'){
-      message[i] = '\0';
-    }
-  }
+}*/
+
+void process_user_message(struct new_connection *connection, char message[256]){
 
   const char s[2] = " ";
   char *token;
-  token = strtok(message, s);
+  char *save;
+  token = strtok_r(message, s, &save);
   int n;
 
+
   while (token != NULL){
+    /*int i;
+    for (i = 0; i < CMD_COUNT; ++i){
+      if (strcmp(token, commands[i]) == 0){
+        handlers[i](strtok_r(NULL, s, &save));
+      }
+    }*/
 
     /* NICK command */
     if (strcmp(token, "NICK") == 0){
       /* copy nick to connection struct */
-      strcpy((*connection).nick, strtok(NULL, s));
+      strcpy((*connection).nick, strtok_r(NULL, s, &save));
 
       /* check if nick exists already */
       n = check_nick((*connection).nick);
@@ -202,7 +235,7 @@ void process_user_message(struct new_connection *connection, char message[256]){
     /* USER command */
     else if (strcmp(token, "USER") == 0){
       /* copy the user to the connection */
-      strcpy((*connection).user, strtok(NULL, s));
+      strcpy((*connection).user, strtok_r(NULL, s, &save));
 
       /* check if both user and nick have been received */
       if (check_connection_complete(connection)==1){
@@ -266,7 +299,8 @@ void close_connection(struct new_connection *user_conn){
   print_list(connections);
   free(user_conn);
   close(*(*user_conn).newsockfd);
-  pthread_join(*(*user_conn).thread, NULL);
+  /*pthread_join(*(*user_conn).thread, NULL);*/
+  pthread_exit(NULL);
 }
 
 int check_connection_complete(struct new_connection *connection){
@@ -282,6 +316,12 @@ int send_greeting(struct new_connection *conn){
   char d_addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(server_addr.sin_addr), s_addr, INET_ADDRSTRLEN);
   inet_ntop(AF_INET, &((*(*conn).client_addr).sin_addr), d_addr, INET_ADDRSTRLEN);
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  if (client_host != NULL){
+    chilog(INFO, "Successfully resolved host\n");
+    sprintf(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
+  }
+
 
   /* set up msg code */
   char code[4];
@@ -291,16 +331,15 @@ int send_greeting(struct new_connection *conn){
   int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(d_addr);
   char uid[uid_l];
   sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, d_addr);
-  char msg[39];
 
   /* compose welcome message */
+  char msg[39];
   sprintf(msg, ":Welcome to the Internet Relay Network");
-
-  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + 38 + 1 + uid_l + 1;
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + 38 + 1 + uid_l + 2;
   char buffer[s_final_msg];
   bzero(buffer, s_final_msg);
 
-  sprintf(buffer, ":%s %s %s %s %s\n", s_addr, code, (*conn).nick, msg, uid);
+  sprintf(buffer, ":%s %s %s %s %s\r\n", s_addr, code, (*conn).nick, msg, uid);
   send(*((*conn).newsockfd), buffer, s_final_msg, 0);
 
   return 0;

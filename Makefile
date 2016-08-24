@@ -2,7 +2,7 @@ OBJS = src/main.o src/log.o src/list.o
 DEPS = $(OBJS:.o=.d)
 CC = gcc
 CFLAGS = -g3 -Wall -fpic -std=gnu99 -MMD -MP
-BIN = ./leet_irc
+BIN = ./chirc
 LDLIBS = -pthread
 
 .PHONY: all clean tests grade
