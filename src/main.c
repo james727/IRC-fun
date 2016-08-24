@@ -31,12 +31,15 @@ int check_connection_complete(struct new_connection *conn);
 void add_nick(struct new_connection *conn);
 void close_connection(struct new_connection *user_conn);
 int send_message(struct new_connection *conn, char *message_body, int message_code);
+int handle_quit(struct new_connection *conn, char *message);
+int handle_nick(struct new_connection *conn, char *nick);
+int handle_user(struct new_connection *conn, char *user);
+
 
 int current_users = 0;
 struct sockaddr_in server_addr;
 struct linked_list connections;
 
-void handle_nick(char *args);
 
 typedef void (*CmdHandler)(char *);
 
@@ -195,9 +198,8 @@ void process_user_message(struct new_connection *connection, char message[256]){
   char *token;
   char *save;
   token = strtok_r(message, s, &save);
-  int n;
 
-
+  /* loop through until a command is hit */
   while (token != NULL){
     /*int i;
     for (i = 0; i < CMD_COUNT; ++i){
@@ -208,50 +210,21 @@ void process_user_message(struct new_connection *connection, char message[256]){
 
     /* NICK command */
     if (strcmp(token, "NICK") == 0){
-      /* copy nick to connection struct */
-      strcpy((*connection).nick, strtok_r(NULL, s, &save));
-
-      /* check if nick exists already */
-      n = check_nick((*connection).nick);
-      if (n == 1){
-        bzero((*connection).nick, MAX_NICK);
-        chilog(INFO,"NICK IN USE\n");
-      }
-      else if (n == 0){
-        add_nick(connection);
-      }
-
-      /* check if both nick and user have been received */
-      if (check_connection_complete(connection)==1){
-        send_greeting(connection);
-      }
-
+      handle_nick(connection, strtok_r(NULL, s, &save));
     }
-
     /* USER command */
     else if (strcmp(token, "USER") == 0){
-      /* copy the user to the connection */
-      strcpy((*connection).user, strtok_r(NULL, s, &save));
-
-      /* check if both user and nick have been received */
-      if (check_connection_complete(connection)==1){
-        send_greeting(connection);
-      }
-
+      handle_user(connection, strtok_r(NULL, s, &save));
     }
-
     /* EXIT command */
-    else if (strcmp(token, "QUIT") == 0){
-      close_connection(connection);
+    else if (strcmp(token, "EXIT") == 0){
+      handle_quit(connection, save);
     }
-
     /* OTHER commands - to be built */
     else {
       chilog(INFO, "%s", token);
     }
-
     token = strtok(NULL, s);
-
   }
 }
 
@@ -295,7 +268,6 @@ void close_connection(struct new_connection *user_conn){
   print_list(connections);
   free(user_conn);
   close(*(*user_conn).newsockfd);
-  /*pthread_join(*(*user_conn).thread, NULL);*/
   pthread_exit(NULL);
 }
 
@@ -345,4 +317,60 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
 
   return 0;
 
+}
+
+int handle_quit(struct new_connection *conn, char *message){
+  /* get hostname */
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+
+  /* compose and send message */
+  int msglen = 13 + strlen((*client_host).h_name) + 1 + strlen(message);
+  char msg[msglen];
+  sprintf(msg, "Closing link %s %s", (*client_host).h_name, message);
+  send_message(conn, msg, 0);
+
+  /* close connection */
+  close_connection(conn);
+  return 0;
+
+}
+
+int handle_nick(struct new_connection *conn, char *nick){
+  /* copy nick to connection struct */
+  strcpy((*conn).nick, nick);
+
+  /* check if nick exists already */
+  int n = check_nick((*conn).nick);
+  if (n == 1){
+    char msg[28];
+    sprintf(msg, ":Nickname is already in use");
+    send_message(conn, msg, 0);
+    bzero((*conn).nick, MAX_NICK);
+  }
+  else if (n == 0){
+    add_nick(conn);
+  }
+  /* check if both nick and user have been received */
+  if (check_connection_complete(conn)==1){
+    send_greeting(conn);
+  }
+  return 0;
+}
+
+int handle_user(struct new_connection *conn, char *user){
+  /* check if user command has already been sent */
+  if ((*conn).user != 0){
+    char *msg = ":Unauthorized command (already registered)";
+    send_message(conn, msg, 0);
+  }
+  else{
+    /* copy the user to the connection */
+    strcpy((*conn).user, user);
+
+    /* check if both user and nick have been received */
+    if (check_connection_complete(conn)==1){
+      send_greeting(conn);
+    }
+  }
+  return 0;
 }
