@@ -33,7 +33,7 @@ void print_list(struct linked_list list_to_print){
   }
 }
 
-int search(struct linked_list list, char search_term[]){
+struct new_connection *search(struct linked_list list, char search_term[]){
   if (list.head == NULL) {
     return 0;
   }
@@ -41,11 +41,11 @@ int search(struct linked_list list, char search_term[]){
     struct node *current = list.head;
     while (current != NULL){
       if (strcmp(search_term, (*(*current).connected_user).nick) == 0){
-        return 1;
+        return (*current).connected_user;
       }
       current = (*current).next;
     }
-    return 0;
+    return NULL;
   }
 }
 

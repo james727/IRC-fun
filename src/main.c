@@ -18,6 +18,7 @@
 #define MAX_NICK 20
 #define MAX_USER 50
 #define MAX_NICKS 100
+#define MAX_HOST 50
 
 int set_up_socket(void);
 void bind_to_port(int sockfd, char *port);
@@ -29,29 +30,40 @@ int send_greetings(struct new_connection *conn);
 int send_welcome(struct new_connection *conn);
 int send_yourhost(struct new_connection *conn);
 int send_myinfo(struct new_connection *conn);
+int send_created(struct new_connection *conn);
+int send_motd(struct new_connection *conn, FILE *fp);
+int send_nosuchnick(struct new_connection *conn, char *nick);
+int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, char *message);
 int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
 void add_nick(struct new_connection *conn);
 void close_connection(struct new_connection *user_conn);
 int send_message(struct new_connection *conn, char *message_body, int message_code);
-int handle_exit(struct new_connection *conn, char *message);
+int handle_quit(struct new_connection *conn, char *message);
 int handle_nick(struct new_connection *conn, char *nick);
 int handle_user(struct new_connection *conn, char *user);
-
+int handle_privmsg(struct new_connection *conn, char *user_msg);
+int handle_ping(struct new_connection *conn, char *params);
+int handle_pong(struct new_connection *conn, char *params);
+int handle_motd(struct new_connection *conn, char *params);
 
 int current_users = 0;
 struct sockaddr_in server_addr;
 struct linked_list connections;
 
-
 typedef int (*CmdHandler)(struct new_connection *, char *);
 
-#define CMD_COUNT 3
-char *commands[] = {"NICK", "USER", "EXIT"};
-CmdHandler handlers[] = {handle_nick, handle_user, handle_exit};
+#define CMD_COUNT 7
+char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD"};
+CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd};
+char *version = "1.0";
+time_t t;
+struct tm create_time;
 
 int main(int argc, char *argv[])
 {
+    t = time(NULL);
+    create_time = *localtime(&t);
     int opt;
     char *port = "6667", *passwd = NULL;
     int verbosity = 0;
@@ -186,11 +198,6 @@ void *handle_new_connection(void *connection){
   return NULL;
 }
 
-/*char *parse_args(char *arg_start){
-  const char s[2] = " ";
-
-}*/
-
 void process_user_message(struct new_connection *connection, char message[256]){
 
   const char s[2] = " ";
@@ -231,7 +238,10 @@ struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in c
 }
 
 int check_nick(char nick[]){
-  return search(connections, nick);
+  if (search(connections, nick) != NULL){
+    return 1;
+  }
+  return 0;
 }
 
 void add_nick(struct new_connection *user_conn){
@@ -264,17 +274,17 @@ int send_welcome(struct new_connection *conn){
   char *msg = ":Welcome to the Internet Relay Network";
 
   /* set up host message */
-  char host_addr[INET_ADDRSTRLEN];
+  char host_addr[MAX_HOST];
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
-  memcpy(host_addr, (*client_host).h_name, strlen((*client_host).h_name));
+  sprintf(host_addr, "%s", (*client_host).h_name);
 
   /* set up user id */
-  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr);
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
   char uid[uid_l];
   sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
 
   /* set up message */
-  int msglen = strlen(msg) + 1 + strlen(uid);
+  int msglen = strlen(msg) + 1 + strlen(uid)+1;
   char finalmsg[msglen];
   sprintf(finalmsg, "%s %s", msg, uid);
   send_message(conn, finalmsg, 1);
@@ -283,17 +293,70 @@ int send_welcome(struct new_connection *conn){
 }
 
 int send_myinfo(struct new_connection *conn){
+  /* set up hostname */
+  char host_addr[MAX_HOST];
+  struct hostent *server_host = gethostbyaddr(&server_addr.sin_addr, sizeof(struct in_addr), AF_INET);
+  if (server_host == NULL){
+    inet_ntop(AF_INET, &(server_addr.sin_addr), host_addr, INET_ADDRSTRLEN);
+  }
+  else{
+    sprintf(host_addr, "%s", (*server_host).h_name);
+  }
+  /* modes */
+  char *modes = "ao mtov";
+  /*compose msg */
+  int msglen = 1 + strlen(host_addr) + 1 + strlen(version) + 1 + strlen(modes) + 1;
+  char msg[msglen];
+  sprintf(msg, ":%s %s %s", host_addr, version, modes);
+  send_message(conn, msg, 4);
   return 0;
 }
 
 int send_yourhost(struct new_connection *conn){
+  /* set up standard message */
+  char *msg1 = ":Your host is ";
+  char *msg2 = ", running version ";
+
+  /* set up hostname */
+  char host_addr[MAX_HOST];
+  struct hostent *server_host = gethostbyaddr(&server_addr.sin_addr, sizeof(struct in_addr), AF_INET);
+  if (server_host == NULL){
+    inet_ntop(AF_INET, &(server_addr.sin_addr), host_addr, INET_ADDRSTRLEN);
+  }
+  else{
+    sprintf(host_addr, "%s", (*server_host).h_name);
+  }
+
+  int msglen = strlen(msg1)+strlen(msg2)+strlen(host_addr)+strlen(version)+1;
+  char msg[msglen];
+  sprintf(msg, "%s%s%s%s", msg1, host_addr, msg2, version);
+  send_message(conn, msg, 2);
+  return 0;
+}
+
+int send_created(struct new_connection *conn){
+  /* generic message */
+  char *msg1 = ":This server was created ";
+  /* set up date */
+  int year = create_time.tm_year + 1900;
+  int day = create_time.tm_mday;
+  int month = create_time.tm_mon;
+  int datelen = 4 + 1 + 2 + 1 + 2;
+  char date[datelen];
+  sprintf(date, "%02d-%02d-%d", month, day, year);
+  /* set up final message */
+  int msglen = strlen(msg1) + strlen(date) + 1;
+  char msg[msglen];
+  sprintf(msg, "%s%s", msg1, date);
+  send_message(conn, msg, 3);
   return 0;
 }
 
 int send_greetings(struct new_connection *conn){
   send_welcome(conn);
-  send_myinfo(conn);
   send_yourhost(conn);
+  send_created(conn);
+  send_myinfo(conn);
   return 0;
 }
 
@@ -303,10 +366,6 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
   char d_addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(server_addr.sin_addr), s_addr, INET_ADDRSTRLEN);
   inet_ntop(AF_INET, &((*(*conn).client_addr).sin_addr), d_addr, INET_ADDRSTRLEN);
-  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
-  if (client_host != NULL){
-    memcpy(d_addr, (*client_host).h_name, strlen((*client_host).h_name));
-  }
 
   /* set up msg code */
   char code[4];
@@ -320,11 +379,40 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
   send(*((*conn).newsockfd), buffer, s_final_msg, 0);
 
   return 0;
-
 }
 
-int handle_exit(struct new_connection *conn, char *message){
-  chilog(INFO, "Exiting\n");
+int send_nosuchnick(struct new_connection *conn, char *nick){
+  char *msg2 = " :No such nick/channel";
+  int msglen = 1 + strlen(nick) + strlen(msg2) + 1;
+  char msg[msglen];
+  sprintf(msg, ":%s%s", nick, msg2);
+  send_message(conn, msg, 401);
+  return 0;
+}
+
+int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, char *msg){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = 1 + strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, ":%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  char *pm = "PRIVMSG";
+  char *sender = (*dest_conn).nick;
+
+  int msglen = strlen(uid) + 1 + strlen(pm) + 1 + strlen(sender) + 2 + strlen(msg) + 3;
+  char msg_final[msglen];
+  sprintf(msg_final, "%s %s %s :%s\r\n", uid, pm, sender, msg);
+  send(*((*dest_conn).newsockfd), msg_final, msglen, 0);
+
+  return 0;
+}
+
+int handle_quit(struct new_connection *conn, char *message){
   /* get hostname */
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
   /* compose and send message */
@@ -349,7 +437,7 @@ int handle_nick(struct new_connection *conn, char *nick_params){
   if (check_nick(nick) == 1){
     char msg[28];
     sprintf(msg, ":Nickname is already in use");
-    send_message(conn, msg, 0);
+    send_message(conn, msg, 433);
   }
   else{
     if (*((*conn).nick) != '\0'){
@@ -375,7 +463,7 @@ int handle_user(struct new_connection *conn, char *user_params){
   /* check if user command has already been sent */
   if (*((*conn).user) != '\0'){
     char *msg = ":Unauthorized command (already registered)";
-    send_message(conn, msg, 0);
+    send_message(conn, msg, 462);
   }
   else{
     /* copy the user to the connection */
@@ -386,4 +474,68 @@ int handle_user(struct new_connection *conn, char *user_params){
     }
   }
   return 0;
+}
+
+int handle_privmsg(struct new_connection *conn, char *msg_user){
+  /* pull of destination nick */
+  const char s[2] = " ";
+  char *save;
+  char *dest_nick = strtok_r(msg_user, s, &save);
+
+  /* check if exists */
+  struct new_connection *dest_conn = search(connections, dest_nick);
+  if (dest_conn != NULL){
+    send_privmsg(conn, dest_conn, save);     /* send message */
+  }
+  else{
+    send_nosuchnick(conn, dest_nick); /* send error msg */
+  }
+  return 0;
+}
+
+int handle_ping(struct new_connection *conn, char *params){
+  char *repl = "PONG";
+  send_message(conn, repl, 0);
+  return 0;
+}
+
+int handle_pong(struct new_connection *conn, char *params){
+  return 0;
+}
+
+int handle_motd(struct new_connection *conn, char *params){
+  FILE *fp = fopen("motd.txt", "r");
+  if (fp != NULL){
+      send_motd(conn);
+  }
+  else {
+    char *msg = ":MOTD File is missing";
+    send_message(conn, msg, 422);
+  }
+  return 0;
+}
+
+int send_motd(struct new_connection *conn, FILE *fp){
+  /* set up hostname */
+  char host_addr[MAX_HOST];
+  struct hostent *server_host = gethostbyaddr(&server_addr.sin_addr, sizeof(struct in_addr), AF_INET);
+  if (server_host == NULL){
+    inet_ntop(AF_INET, &(server_addr.sin_addr), host_addr, INET_ADDRSTRLEN);
+  }
+  else{
+    sprintf(host_addr, "%s", (*server_host).h_name);
+  }
+
+  /* set up messages */
+  int msg1len = 3 + strlen(host_addr) + 22 + 1;
+  char msg1[msg1len];
+  sprintf(msg1, ":- %s Message of the day - ", host_addr);
+  char *msg3 = ":End of MOTD command";
+
+  /* send 1st message */
+  send_message(conn, msg1, 375);
+
+  /* loop over lines in file  */
+  
+
 }
