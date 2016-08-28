@@ -46,16 +46,23 @@ int handle_privmsg(struct new_connection *conn, char *user_msg);
 int handle_ping(struct new_connection *conn, char *params);
 int handle_pong(struct new_connection *conn, char *params);
 int handle_motd(struct new_connection *conn, char *params);
+int handle_lusers(struct new_connection *conn, char *params);
+int handle_whois(struct new_connection *conn, char *params);
 
 int current_users = 0;
+int current_unknown_connections = 0;
+int current_operators = 0;
+int current_servers = 1;
+int current_services = 1;
+int current_channels = 1;
 struct sockaddr_in server_addr;
 struct linked_list connections;
 
 typedef int (*CmdHandler)(struct new_connection *, char *);
 
-#define CMD_COUNT 7
-char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD"};
-CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd};
+#define CMD_COUNT 9
+char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS"};
+CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois};
 char *version = "1.0";
 time_t t;
 struct tm create_time;
@@ -174,6 +181,7 @@ void *handle_new_connection(void *connection){
   char buffer[BUF_SIZE]; /* read characters from socket into this buffer */
   int readpos = 0;
   int characters_read;
+  ++current_unknown_connections;
 
   while (1){
     /* read from the socket and increment readpos */
@@ -247,7 +255,6 @@ int check_nick(char nick[]){
 void add_nick(struct new_connection *user_conn){
   chilog(INFO, "ADDING NICK %s\n", (*user_conn).nick);
   insert_element(user_conn, &connections);
-  ++current_users;
   chilog(INFO, "Printing connections...\n");
   print_list(connections);
 }
@@ -423,6 +430,7 @@ int handle_quit(struct new_connection *conn, char *message){
   char msg[msglen];
   sprintf(msg, "Closing link %s %s", (*client_host).h_name, message);
   send_message(conn, msg, 0);
+  --current_users;
   /* close connection */
   close_connection(conn);
   return 0;
@@ -450,6 +458,8 @@ int handle_nick(struct new_connection *conn, char *nick_params){
     /* check if both nick and user have been received */
     if (check_connection_complete(conn)==1){
       send_greetings(conn);
+      ++current_users;
+      --current_unknown_connections;
     }
   }
   return 0;
@@ -471,6 +481,8 @@ int handle_user(struct new_connection *conn, char *user_params){
     /* check if both user and nick have been received */
     if (check_connection_complete(conn)==1){
       send_greetings(conn);
+      ++current_users;
+      --current_unknown_connections;
     }
   }
   return 0;
@@ -506,7 +518,7 @@ int handle_pong(struct new_connection *conn, char *params){
 int handle_motd(struct new_connection *conn, char *params){
   FILE *fp = fopen("motd.txt", "r");
   if (fp != NULL){
-      send_motd(conn);
+    send_motd(conn, fp);
   }
   else {
     char *msg = ":MOTD File is missing";
@@ -536,6 +548,64 @@ int send_motd(struct new_connection *conn, FILE *fp){
   send_message(conn, msg1, 375);
 
   /* loop over lines in file  */
-  
+  char current_line[256];
+  int i = 0;
+  char current_char = fgetc(fp);
+  while (current_char != EOF){
+    if (current_char == '\n'){
+      current_line[i] = '\0';
+      i = 0;
+      send_message(conn, &current_line[0], 372);
+    }
+    else{
+      current_line[i] = current_char;
+      ++i;
+    }
+    current_char = fgetc(fp);
+  }
 
+  /* send final message */
+  send_message(conn, msg3, 376);
+  return 0;
+}
+
+int handle_lusers(struct new_connection *conn, char *params){
+  /* first reply */
+  int msg1len = 12 + 42 + 1;
+  char msg1[msg1len];
+  sprintf(msg1, ":There are %d users and %d services on %d servers", current_users, current_services, current_servers);
+  send_message(conn, msg1, 251);
+
+  /* second reply */
+  int msg2len = 4 + 20 + 1;
+  char msg2[msg2len];
+  sprintf(msg2, "%d :operator(s) online", current_operators);
+  send_message(conn, msg2, 252);
+
+  /* third reply */
+  int msg3len = 4 + 23 + 1;
+  char msg3[msg3len];
+  sprintf(msg3, "%d :unknown connection(s)", current_unknown_connections);
+  send_message(conn, msg3, 253);
+
+  /* fourth reply */
+  int msg4len = 4 + 17 + 1;
+  char msg4[msg4len];
+  sprintf(msg4, "%d :channels formed", current_channels);
+  send_message(conn, msg4, 254);
+
+  /* fifth and final reply */
+  int msg5len = 8 + 29 + 1;
+  char msg5[msg5len];
+  int total_clients = current_users + current_unknown_connections;
+  sprintf(msg5, ":I have %d clients and %d servers", total_clients, current_servers);
+  send_message(conn, msg5, 255);
+
+  return 0;
+}
+
+int handle_whois(struct new_connection *conn, char *params){
+  char *repl = "PONG";
+  send_message(conn, repl, 0);
+  return 0;
 }
