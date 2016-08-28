@@ -7,4 +7,5 @@ struct new_connection{
   struct sockaddr_in *client_addr;
   char *nick;
   char *user;
+  char *realname;
 };

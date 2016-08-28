@@ -17,6 +17,7 @@
 
 #define MAX_NICK 20
 #define MAX_USER 50
+#define MAX_REALNAME 50
 #define MAX_NICKS 100
 #define MAX_HOST 50
 
@@ -34,6 +35,7 @@ int send_created(struct new_connection *conn);
 int send_motd(struct new_connection *conn, FILE *fp);
 int send_nosuchnick(struct new_connection *conn, char *nick);
 int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, char *message);
+int send_whois(struct new_connection *conn, struct new_connection *whois_conn);
 int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
 void add_nick(struct new_connection *conn);
@@ -64,6 +66,7 @@ typedef int (*CmdHandler)(struct new_connection *, char *);
 char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS"};
 CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois};
 char *version = "1.0";
+char *server_info = "The greatest IRC server of all time";
 time_t t;
 struct tm create_time;
 
@@ -187,6 +190,7 @@ void *handle_new_connection(void *connection){
     /* read from the socket and increment readpos */
     characters_read = read(*((*current_conn).newsockfd), &buffer[readpos], BUF_SIZE-readpos); /* read from the socket */
     if (characters_read < 0){
+      pthread_exit(NULL);
       break;
     }
     readpos += characters_read;
@@ -220,7 +224,7 @@ void process_user_message(struct new_connection *connection, char message[256]){
         handlers[i](connection, save);
       }
     }
-    token = strtok(NULL, s);
+    token = strtok_r(NULL, s, &save);
   }
 }
 
@@ -232,10 +236,12 @@ struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in c
   user -> client_addr = malloc(sizeof(client_addr));
   user -> nick = malloc(MAX_NICK);
   user -> user = malloc(MAX_USER);
+  user -> realname = malloc(MAX_REALNAME);
 
   /* zero out nick and user */
   bzero((*user).nick, MAX_NICK);
   bzero((*user).user, MAX_USER);
+  bzero((*user).realname, MAX_REALNAME);
 
   /* copy arguments to member variables and return */
   (*user).thread = thread;
@@ -264,8 +270,19 @@ void close_connection(struct new_connection *user_conn){
   delete_element(&connections, (*user_conn).nick);
   chilog(INFO, "Printing connections...\n");
   print_list(connections);
-  free(user_conn);
   close(*(*user_conn).newsockfd);
+
+  /* free stuff */
+  free((*user_conn).nick);
+  free((*user_conn).user);
+  free((*user_conn).realname);
+  free((*user_conn).realname);
+  free((*user_conn).client_addr);
+  free((*user_conn).newsockfd);
+  free((*user_conn).thread);
+  free(user_conn);
+
+  /* shut down thread */
   pthread_exit(NULL);
 }
 
@@ -605,7 +622,60 @@ int handle_lusers(struct new_connection *conn, char *params){
 }
 
 int handle_whois(struct new_connection *conn, char *params){
-  char *repl = "PONG";
-  send_message(conn, repl, 0);
+  /* pull off nick */
+  const char s[2] = " ";
+  char *save;
+  char *whois_nick = strtok_r(params, s, &save);
+
+  /* check if exists */
+  struct new_connection *whois_conn = search(connections, whois_nick);
+  if (whois_conn != NULL){
+    send_whois(conn, whois_conn);     /* send message */
+  }
+  else{
+    send_nosuchnick(conn, whois_nick); /* send error msg */
+  }
+  return 0;
+}
+
+int send_whois(struct new_connection *conn, struct new_connection *whois_conn){
+  /* set up outputs for 1st reply */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*whois_conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+  char *whoisnick = (*whois_conn).nick;
+  char *whoisuser = (*whois_conn).user;
+  char *whoisname = (*whois_conn).realname;
+  if (whoisname == NULL){
+    whoisname = "";
+  }
+
+  /* send 1st reply */
+  int msg1len = strlen(whoisnick) + 1 + strlen(whoisuser) + 1 + strlen(host_addr) + 3 + strlen(whoisname) + 1;
+  char msg1[msg1len];
+  sprintf(msg1, "%s %s %s * :%s", whoisnick, whoisuser, host_addr, whoisname);
+  send_message(conn, msg1, 311);
+
+  /* set up 2nd reply (hostname first) */
+  /* set up hostname */
+  char server[MAX_HOST];
+  struct hostent *server_host = gethostbyaddr(&server_addr.sin_addr, sizeof(struct in_addr), AF_INET);
+  if (server_host == NULL){
+    inet_ntop(AF_INET, &(server_addr.sin_addr), server, INET_ADDRSTRLEN);
+  }
+  else{
+    sprintf(server, "%s", (*server_host).h_name);
+  }
+  int msg2len = strlen(whoisnick) + 1 + strlen(server) + 2 + strlen(server_info) + 1;
+  char msg2[msg2len];
+  sprintf(msg2, "%s %s :%s", whoisnick, server, server_info);
+  send_message(conn, msg2, 312);
+
+  /* end of whois setup */
+  int msg3len = strlen(whoisnick) + 19 + 1;
+  char msg3[msg3len];
+  sprintf(msg3, "%s :End of WHOIS list", whoisnick);
+  send_message(conn, msg3, 318);
+
   return 0;
 }
