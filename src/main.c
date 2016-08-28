@@ -26,7 +26,7 @@ void bind_to_port(int sockfd, char *port);
 void listen_to_port(int sockfd);
 void *handle_new_connection (void *newsockfd);
 struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr, pthread_t *thread);
-void process_user_message(struct new_connection *conn, char message[256]);
+int process_user_message(struct new_connection *conn, char message[256]);
 int send_greetings(struct new_connection *conn);
 int send_welcome(struct new_connection *conn);
 int send_yourhost(struct new_connection *conn);
@@ -50,6 +50,7 @@ int handle_pong(struct new_connection *conn, char *params);
 int handle_motd(struct new_connection *conn, char *params);
 int handle_lusers(struct new_connection *conn, char *params);
 int handle_whois(struct new_connection *conn, char *params);
+int send_command_not_found(struct new_connection *conn, char *command);
 
 int current_users = 0;
 int current_unknown_connections = 0;
@@ -210,22 +211,22 @@ void *handle_new_connection(void *connection){
   return NULL;
 }
 
-void process_user_message(struct new_connection *connection, char message[256]){
+int process_user_message(struct new_connection *connection, char message[256]){
 
   const char s[2] = " ";
   char *token;
   char *save;
   token = strtok_r(message, s, &save);
 
-  /* loop through until a command is hit */
-  while (token != NULL){
-    for (int i = 0; i < CMD_COUNT; ++i){
-      if (strcmp(token, commands[i]) == 0){
-        handlers[i](connection, save);
-      }
+  /* check if in recognized commands */
+  for (int i = 0; i < CMD_COUNT; ++i){
+    if (strcmp(token, commands[i]) == 0){
+      handlers[i](connection, save);
+      return 0;
     }
-    token = strtok_r(NULL, s, &save);
   }
+  send_command_not_found(connection, token);
+  return 0;
 }
 
 struct new_connection *create_new_connection(int newsockfd, struct sockaddr_in client_addr, pthread_t *thread){
@@ -677,5 +678,13 @@ int send_whois(struct new_connection *conn, struct new_connection *whois_conn){
   sprintf(msg3, "%s :End of WHOIS list", whoisnick);
   send_message(conn, msg3, 318);
 
+  return 0;
+}
+
+int send_command_not_found(struct new_connection *conn, char *command){
+  int msglen = strlen(command) + 17 + 1;
+  char msg[msglen];
+  sprintf(msg, "%s :Unknown command", command);
+  send_message(conn, msg, 421);
   return 0;
 }
