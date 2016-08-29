@@ -332,7 +332,7 @@ int send_myinfo(struct new_connection *conn){
   /*compose msg */
   int msglen = 1 + strlen(host_addr) + 1 + strlen(version) + 1 + strlen(modes) + 1;
   char msg[msglen];
-  sprintf(msg, ":%s %s %s", host_addr, version, modes);
+  sprintf(msg, "%s %s %s", host_addr, version, modes);
   send_message(conn, msg, 4);
   return 0;
 }
@@ -382,6 +382,9 @@ int send_greetings(struct new_connection *conn){
   send_yourhost(conn);
   send_created(conn);
   send_myinfo(conn);
+  char *tmp = "dummy";
+  handle_lusers(conn, tmp);
+  handle_motd(conn, tmp);
   return 0;
 }
 
@@ -397,10 +400,17 @@ int send_message(struct new_connection *conn, char *message_body, int message_co
   sprintf(code, "%03d", message_code);
 
   /* set up and write final message */
-  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen((*conn).nick) + 1 + strlen(message_body) + 2;
+  char *nick;
+  if ((*conn).nick[0] == '\0'){
+    nick = "*";
+  }
+  else {
+    nick = (*conn).nick;
+  }
+  int s_final_msg = 1 + strlen(s_addr) + 1 + 3 + 1 + strlen(nick) + 1 + strlen(message_body) + 2;
   char buffer[s_final_msg];
   bzero(buffer, s_final_msg);
-  sprintf(buffer, ":%s %s %s %s\r\n", s_addr, code, (*conn).nick, message_body);
+  sprintf(buffer, ":%s %s %s %s\r\n", s_addr, code, nick, message_body);
   send(*((*conn).newsockfd), buffer, s_final_msg, 0);
 
   return 0;
@@ -461,8 +471,9 @@ int handle_nick(struct new_connection *conn, char *nick_params){
   char *nick = strtok_r(nick_params, s, &save);
   /* check if nick exists already */
   if (check_nick(nick) == 1){
-    char msg[28];
-    sprintf(msg, ":Nickname is already in use");
+    int msglen = strlen(nick) + 1 + 28 + 1;
+    char msg[msglen];
+    sprintf(msg,"%s :Nickname is already in use", nick);
     send_message(conn, msg, 433);
   }
   else{
@@ -498,9 +509,9 @@ int handle_user(struct new_connection *conn, char *user_params){
     strcpy((*conn).user, user);
     /* check if both user and nick have been received */
     if (check_connection_complete(conn)==1){
-      send_greetings(conn);
       ++current_users;
       --current_unknown_connections;
+      send_greetings(conn);
     }
   }
   return 0;
