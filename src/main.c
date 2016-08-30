@@ -20,6 +20,7 @@
 #define MAX_REALNAME 50
 #define MAX_NICKS 100
 #define MAX_HOST 50
+#define MAX_MESSAGE 512
 
 int set_up_socket(void);
 void bind_to_port(int sockfd, char *port);
@@ -35,6 +36,7 @@ int send_created(struct new_connection *conn);
 int send_motd(struct new_connection *conn, FILE *fp);
 int send_nosuchnick(struct new_connection *conn, char *nick);
 int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, char *message);
+int send_notice(struct new_connection *conn, struct new_connection *dest_conn, char *message);
 int send_whois(struct new_connection *conn, struct new_connection *whois_conn);
 int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
@@ -50,22 +52,24 @@ int handle_pong(struct new_connection *conn, char *params);
 int handle_motd(struct new_connection *conn, char *params);
 int handle_lusers(struct new_connection *conn, char *params);
 int handle_whois(struct new_connection *conn, char *params);
+int handle_notice(struct new_connection *conn, char *user_msg);
 int send_command_not_found(struct new_connection *conn, char *command);
+char *get_last_param(char *params);
 
 int current_users = 0;
 int current_unknown_connections = 0;
 int current_operators = 0;
 int current_servers = 1;
-int current_services = 1;
-int current_channels = 1;
+int current_services = 0;
+int current_channels = 0;
 struct sockaddr_in server_addr;
 struct linked_list connections;
 
 typedef int (*CmdHandler)(struct new_connection *, char *);
 
-#define CMD_COUNT 9
-char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS"};
-CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois};
+#define CMD_COUNT 10
+char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS", "NOTICE"};
+CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois, handle_notice};
 char *version = "1.0";
 char *server_info = "The greatest IRC server of all time";
 time_t t;
@@ -181,7 +185,7 @@ void listen_to_port(int sockfd){
 
 void *handle_new_connection(void *connection){
   struct new_connection *current_conn = (struct new_connection*) connection;
-  const int BUF_SIZE = 512;
+  const int BUF_SIZE = 700;
   char buffer[BUF_SIZE]; /* read characters from socket into this buffer */
   int readpos = 0;
   int characters_read;
@@ -195,7 +199,6 @@ void *handle_new_connection(void *connection){
       break;
     }
     readpos += characters_read;
-    chilog(INFO, "%s\n", buffer);
 
     /* loop through chars starting at beginning of last readpos-1 (to check if there was a \r) */
     for (int i = readpos-characters_read-1; i < readpos-1; ++i){
@@ -206,12 +209,17 @@ void *handle_new_connection(void *connection){
         memmove(buffer, buffer+i+2, readpos-(i+2)); /* move remainder of buffer to beginning */
         readpos = readpos-(i+2);
       }
+      /*else if (i == 510){
+        buffer[i] = '\0';
+        process_user_message(current_conn, buffer);
+        readpos = 0;
+      }*/
     }
   }
   return NULL;
 }
 
-int process_user_message(struct new_connection *connection, char message[256]){
+int process_user_message(struct new_connection *connection, char message[700]){
 
   const char s[2] = " ";
   char *token;
@@ -260,17 +268,11 @@ int check_nick(char nick[]){
 }
 
 void add_nick(struct new_connection *user_conn){
-  chilog(INFO, "ADDING NICK %s\n", (*user_conn).nick);
   insert_element(user_conn, &connections);
-  chilog(INFO, "Printing connections...\n");
-  print_list(connections);
 }
 
 void close_connection(struct new_connection *user_conn){
-  chilog(INFO, "Closing connection for NICK %s\n", (*user_conn).nick);
   delete_element(&connections, (*user_conn).nick);
-  chilog(INFO, "Printing connections...\n");
-  print_list(connections);
   close(*(*user_conn).newsockfd);
 
   /* free stuff */
@@ -420,7 +422,7 @@ int send_nosuchnick(struct new_connection *conn, char *nick){
   char *msg2 = " :No such nick/channel";
   int msglen = 1 + strlen(nick) + strlen(msg2) + 1;
   char msg[msglen];
-  sprintf(msg, ":%s%s", nick, msg2);
+  sprintf(msg, "%s%s", nick, msg2);
   send_message(conn, msg, 401);
   return 0;
 }
@@ -442,6 +444,12 @@ int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, 
   int msglen = strlen(uid) + 1 + strlen(pm) + 1 + strlen(sender) + 2 + strlen(msg) + 3;
   char msg_final[msglen];
   sprintf(msg_final, "%s %s %s :%s\r\n", uid, pm, sender, msg);
+  if (msglen > 512){
+    chilog(INFO,"WEIRDNESS REACHED");
+    msg_final[510] = '\r';
+    msg_final[511] = '\n';
+    msglen = 512;
+  }
   send(*((*dest_conn).newsockfd), msg_final, msglen, 0);
 
   return 0;
@@ -486,9 +494,9 @@ int handle_nick(struct new_connection *conn, char *nick_params){
     add_nick(conn);
     /* check if both nick and user have been received */
     if (check_connection_complete(conn)==1){
-      send_greetings(conn);
       ++current_users;
       --current_unknown_connections;
+      send_greetings(conn);
     }
   }
   return 0;
@@ -507,6 +515,9 @@ int handle_user(struct new_connection *conn, char *user_params){
   else{
     /* copy the user to the connection */
     strcpy((*conn).user, user);
+    char *fullname = get_last_param(save);
+    strcpy((*conn).realname, fullname);
+
     /* check if both user and nick have been received */
     if (check_connection_complete(conn)==1){
       ++current_users;
@@ -526,7 +537,7 @@ int handle_privmsg(struct new_connection *conn, char *msg_user){
   /* check if exists */
   struct new_connection *dest_conn = search(connections, dest_nick);
   if (dest_conn != NULL){
-    send_privmsg(conn, dest_conn, save);     /* send message */
+    send_privmsg(conn, dest_conn, save+1);     /* send message (+1 to avoid :) */
   }
   else{
     send_nosuchnick(conn, dest_nick); /* send error msg */
@@ -535,8 +546,19 @@ int handle_privmsg(struct new_connection *conn, char *msg_user){
 }
 
 int handle_ping(struct new_connection *conn, char *params){
+  /* get ip addresses and hosts */
+  char s_addr[INET_ADDRSTRLEN];
+  char d_addr[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &(server_addr.sin_addr), s_addr, INET_ADDRSTRLEN);
+  inet_ntop(AF_INET, &((*(*conn).client_addr).sin_addr), d_addr, INET_ADDRSTRLEN);
+
   char *repl = "PONG";
-  send_message(conn, repl, 0);
+
+  int s_final_msg = 1 + strlen(s_addr) + 1 + strlen(repl) + 1 + strlen(s_addr) + 2;
+  char buffer[s_final_msg];
+  bzero(buffer, s_final_msg);
+  sprintf(buffer, ":%s %s %s\r\n", s_addr, repl, s_addr);
+  send(*((*conn).newsockfd), buffer, s_final_msg, 0);
   return 0;
 }
 
@@ -578,12 +600,15 @@ int send_motd(struct new_connection *conn, FILE *fp){
 
   /* loop over lines in file  */
   char current_line[256];
-  int i = 0;
+  current_line[0] = ':';
+  current_line[1] = '-';
+  current_line[2] = ' ';
+  int i = 3;
   char current_char = fgetc(fp);
   while (current_char != EOF){
     if (current_char == '\n'){
       current_line[i] = '\0';
-      i = 0;
+      i = 3;
       send_message(conn, &current_line[0], 372);
     }
     else{
@@ -591,6 +616,9 @@ int send_motd(struct new_connection *conn, FILE *fp){
       ++i;
     }
     current_char = fgetc(fp);
+  }
+  if (i != 3){
+    send_message(conn, &current_line[0], 372);
   }
 
   /* send final message */
@@ -698,4 +726,51 @@ int send_command_not_found(struct new_connection *conn, char *command){
   sprintf(msg, "%s :Unknown command", command);
   send_message(conn, msg, 421);
   return 0;
+}
+
+int handle_notice(struct new_connection *conn, char *msg_user){
+  /* pull of destination nick */
+  const char s[2] = " ";
+  char *save;
+  char *dest_nick = strtok_r(msg_user, s, &save);
+
+  /* check if exists */
+  struct new_connection *dest_conn = search(connections, dest_nick);
+  if (dest_conn != NULL){
+    send_notice(conn, dest_conn, save+1);     /* send message (+1 to avoid :) */
+  }
+  else{
+    return 0; /* no errors here */
+  }
+  return 0;
+}
+
+int send_notice(struct new_connection *conn, struct new_connection *dest_conn, char *msg){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = 1 + strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, ":%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  char *pm = "NOTICE";
+  char *sender = (*dest_conn).nick;
+
+  int msglen = strlen(uid) + 1 + strlen(pm) + 1 + strlen(sender) + 2 + strlen(msg) + 3;
+  char msg_final[msglen];
+  sprintf(msg_final, "%s %s %s :%s\r\n", uid, pm, sender, msg);
+  send(*((*dest_conn).newsockfd), msg_final, msglen, 0);
+
+  return 0;
+}
+
+char *get_last_param(char *params){
+  char *current_pointer = params;
+  while (*current_pointer != ':'){
+    current_pointer++;
+  }
+  return current_pointer+1;
 }

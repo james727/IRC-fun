@@ -10,6 +10,12 @@ struct linked_list create_new_list(void){
   return list;
 }
 
+struct channel_list create_channel_list(void){
+  struct channel_list list;
+  list.head = NULL;
+  return list;
+}
+
 void insert_element(struct new_connection *user_conn, struct linked_list *list){
   /* initialize node */
   struct node *name_node = malloc(sizeof(struct node));
@@ -18,6 +24,16 @@ void insert_element(struct new_connection *user_conn, struct linked_list *list){
   /* prepend to list */
   (*name_node).next = (*list).head;
   (*list).head = name_node;
+}
+
+void insert_channel(struct channel *new_channel, struct channel_list *list){
+  /* initialize node */
+  struct channel_node *channel_node = malloc(sizeof(struct channel_node));
+  (*channel_node).channel_data = new_channel;
+
+  /* prepend to list */
+  (*channel_node).next = (*list).head;
+  (*list).head = channel_node;
 }
 
 void print_list(struct linked_list list_to_print){
@@ -49,6 +65,22 @@ struct new_connection *search(struct linked_list list, char search_term[]){
   }
 }
 
+struct channel *search_channels(struct channel_list list, char *search_channel_name){
+  if (list.head == NULL) {
+    return 0;
+  }
+  else {
+    struct channel_node *current = list.head;
+    while (current != NULL){
+      if (strcmp(search_channel_name, (*(*current).channel_data).name) == 0){
+        return (*current).channel_data;
+      }
+      current = (*current).next;
+    }
+    return NULL;
+  }
+}
+
 void delete_element(struct linked_list *list, char *name_to_delete){
   struct node *pointer1 = (*list).head;
   if (strcmp(name_to_delete, (*(*pointer1).connected_user).nick) == 0){
@@ -70,7 +102,25 @@ void delete_element(struct linked_list *list, char *name_to_delete){
   }
 }
 
+void delete_channel(struct channel_list *list, char *channel_name_to_delete){
+  struct channel_node *pointer1 = (*list).head;
+  if (strcmp(channel_name_to_delete, (*(*pointer1).channel_data).name) == 0){
+    (*list).head = (*pointer1).next;
+    free(pointer1);
+  }
+  else{
+    struct channel_node *pointer2 = (*pointer1).next;
+    while (pointer2 != NULL){
+      if (strcmp(channel_name_to_delete, (*(*pointer2).channel_data).name) == 0){
+        (*pointer1).next = (*pointer2).next;
+        free(pointer2);
+      }
+      pointer1 = pointer2;
+      pointer2 = (*pointer1).next;
+    }
+  }
+}
+
 void print_node_value(struct node *node_to_print){
-  /*printf("%s\n", (*node_to_print).name_pointer);*/
   chilog(INFO,"%s\n", (*(*node_to_print).connected_user).nick);
 }
