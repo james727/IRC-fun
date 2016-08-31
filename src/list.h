@@ -22,8 +22,8 @@ struct channel_list {
   struct channel_node *head;
 };
 
-struct linked_list create_new_list(void);
-struct channel_list create_channel_list(void);
+struct linked_list *create_new_list(void);
+struct channel_list *create_channel_list(void);
 void insert_element(struct new_connection *user_conn, struct linked_list *list);
 void insert_channel(struct channel *new_channel, struct channel_list *list);
 void print_list(struct linked_list list_to_print);

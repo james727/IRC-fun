@@ -4,15 +4,15 @@
 #include "list.h"
 #include "log.h"
 
-struct linked_list create_new_list(void){
-  struct linked_list list;
-  list.head = NULL;
+struct linked_list *create_new_list(void){
+  struct linked_list *list = malloc(sizeof(struct linked_list));
+  (*list).head = NULL;
   return list;
 }
 
-struct channel_list create_channel_list(void){
-  struct channel_list list;
-  list.head = NULL;
+struct channel_list *create_channel_list(void){
+  struct channel_list *list = malloc(sizeof(struct channel_list));
+  (*list).head = NULL;
   return list;
 }
 
@@ -51,7 +51,7 @@ void print_list(struct linked_list list_to_print){
 
 struct new_connection *search(struct linked_list list, char search_term[]){
   if (list.head == NULL) {
-    return 0;
+    return NULL;
   }
   else {
     struct node *current = list.head;
@@ -67,7 +67,7 @@ struct new_connection *search(struct linked_list list, char search_term[]){
 
 struct channel *search_channels(struct channel_list list, char *search_channel_name){
   if (list.head == NULL) {
-    return 0;
+    return NULL;
   }
   else {
     struct channel_node *current = list.head;

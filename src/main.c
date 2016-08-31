@@ -21,6 +21,7 @@
 #define MAX_NICKS 100
 #define MAX_HOST 50
 #define MAX_MESSAGE 512
+#define MAX_TOPIC 100
 
 int set_up_socket(void);
 void bind_to_port(int sockfd, char *port);
@@ -36,7 +37,9 @@ int send_created(struct new_connection *conn);
 int send_motd(struct new_connection *conn, FILE *fp);
 int send_nosuchnick(struct new_connection *conn, char *nick);
 int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, char *message);
+int send_channelmsg(struct new_connection *conn, struct channel *dest_channel, char *message);
 int send_notice(struct new_connection *conn, struct new_connection *dest_conn, char *message);
+int send_channelnotice(struct new_connection *conn, struct channel *dest_channel, char *message);
 int send_whois(struct new_connection *conn, struct new_connection *whois_conn);
 int check_nick(char nick[]);
 int check_connection_complete(struct new_connection *conn);
@@ -53,8 +56,18 @@ int handle_motd(struct new_connection *conn, char *params);
 int handle_lusers(struct new_connection *conn, char *params);
 int handle_whois(struct new_connection *conn, char *params);
 int handle_notice(struct new_connection *conn, char *user_msg);
+int handle_list(struct new_connection *conn, char *params);
+int handle_join(struct new_connection *conn, char *channel);
+int handle_names(struct new_connection *conn, char *params);
 int send_command_not_found(struct new_connection *conn, char *command);
+int send_list_repl(struct new_connection *conn, struct channel *channel_to_send);
 char *get_last_param(char *params);
+struct channel *create_channel(char *name, char *topic);
+int add_user(struct channel *channel, struct new_connection *user);
+int send_topic(struct new_connection *conn, struct channel *channel);
+int send_name_message(struct new_connection *conn, struct channel *channel);
+char *get_nick_list(struct channel *channel);
+int check_channel_permission(struct new_connection *conn, struct channel *chann);
 
 int current_users = 0;
 int current_unknown_connections = 0;
@@ -64,12 +77,13 @@ int current_services = 0;
 int current_channels = 0;
 struct sockaddr_in server_addr;
 struct linked_list connections;
+struct channel_list channels;
 
 typedef int (*CmdHandler)(struct new_connection *, char *);
 
-#define CMD_COUNT 10
-char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS", "NOTICE"};
-CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois, handle_notice};
+#define CMD_COUNT 13
+char *commands[] = {"NICK", "USER", "QUIT", "PRIVMSG", "PING", "PONG", "MOTD", "LUSERS", "WHOIS", "NOTICE", "LIST", "JOIN", "NAMES"};
+CmdHandler handlers[] = {handle_nick, handle_user, handle_quit, handle_privmsg, handle_ping, handle_pong, handle_motd, handle_lusers, handle_whois, handle_notice, handle_list, handle_join, handle_names};
 char *version = "1.0";
 char *server_info = "The greatest IRC server of all time";
 time_t t;
@@ -133,7 +147,20 @@ int main(int argc, char *argv[])
         break;
     }
 
-  connections = create_new_list();
+  /* set up list of clients */
+  connections = *create_new_list();
+
+  /* set up 2 channels (for testing) */
+  char *channel1name = "General";
+  char *channel2name = "Random";
+  char *topic1 = "General discussion for the masses";
+  struct channel *channel1 = create_channel(channel1name, topic1);
+  struct channel *channel2 = create_channel(channel2name, NULL);
+  channels = *create_channel_list();
+  insert_channel(channel1, &channels);
+  insert_channel(channel2, &channels);
+
+  /* socket fun */
   int sockfd = set_up_socket();
   bind_to_port(sockfd, port);
   listen_to_port(sockfd);
@@ -209,11 +236,6 @@ void *handle_new_connection(void *connection){
         memmove(buffer, buffer+i+2, readpos-(i+2)); /* move remainder of buffer to beginning */
         readpos = readpos-(i+2);
       }
-      /*else if (i == 510){
-        buffer[i] = '\0';
-        process_user_message(current_conn, buffer);
-        readpos = 0;
-      }*/
     }
   }
   return NULL;
@@ -529,7 +551,7 @@ int handle_user(struct new_connection *conn, char *user_params){
 }
 
 int handle_privmsg(struct new_connection *conn, char *msg_user){
-  /* pull of destination nick */
+  /* pull of destination nick/channel */
   const char s[2] = " ";
   char *save;
   char *dest_nick = strtok_r(msg_user, s, &save);
@@ -540,7 +562,14 @@ int handle_privmsg(struct new_connection *conn, char *msg_user){
     send_privmsg(conn, dest_conn, save+1);     /* send message (+1 to avoid :) */
   }
   else{
-    send_nosuchnick(conn, dest_nick); /* send error msg */
+    /* check if it's a channel */
+    struct channel *dest_channel = search_channels(channels, dest_nick);
+    if (dest_channel != NULL){
+      send_channelmsg(conn, dest_channel, save+1);
+    }
+    else {
+      send_nosuchnick(conn, dest_nick); /* send error msg */
+    }
   }
   return 0;
 }
@@ -740,7 +769,11 @@ int handle_notice(struct new_connection *conn, char *msg_user){
     send_notice(conn, dest_conn, save+1);     /* send message (+1 to avoid :) */
   }
   else{
-    return 0; /* no errors here */
+    /* check if it's a channel */
+    struct channel *dest_channel = search_channels(channels, dest_nick);
+    if (dest_channel != NULL){
+      send_channelnotice(conn, dest_channel, save+1);
+    }
   }
   return 0;
 }
@@ -773,4 +806,234 @@ char *get_last_param(char *params){
     current_pointer++;
   }
   return current_pointer+1;
+}
+
+struct channel *create_channel(char *name, char *topic){
+  /* allocate space for the struct and member variables */
+  struct channel *channel_data = malloc(sizeof(struct channel));
+  channel_data -> name = malloc(strlen(name)+1);
+  memcpy((*channel_data).name, name, strlen(name)+1);
+  channel_data -> topic = malloc(MAX_TOPIC);
+  channel_data -> moderated_mode = malloc(sizeof(int));
+  channel_data -> topic_mode = malloc(sizeof(int));
+  channel_data -> users = create_new_list();
+  channel_data -> num_users = malloc(sizeof(int));
+
+  /* check if topic is passed in or NULL */
+  if (topic == NULL){
+    /* zero out topic */
+    bzero((*channel_data).topic, MAX_TOPIC);
+  }
+  else {
+    memcpy((*channel_data).topic, topic, strlen(topic)+1);
+  }
+
+  /* set int vars */
+  *(*channel_data).moderated_mode = 0;
+  *(*channel_data).topic_mode = 0;
+  *(*channel_data).num_users = 0;
+
+  return channel_data;
+}
+
+int handle_list(struct new_connection *conn, char *params){
+  /* send channel replies */
+  if (params == NULL){ /* if no params, send all channels */
+    if (channels.head != NULL){
+      struct channel_node *current = channels.head;
+      while (current != NULL){
+        send_list_repl(conn, (*current).channel_data);
+        current = (*current).next;
+      }
+    }
+  }
+  else { /* search for specific channel and send */
+    /* get channel name */
+    char *channel_name = params;
+    struct channel *searched_channel = search_channels(channels, channel_name);
+    if (searched_channel != NULL){
+      send_list_repl(conn, searched_channel);
+    }
+  }
+
+  /* send end of list message */
+  char *msg2 = ":End of LIST";
+  send_message(conn, msg2, 323);
+
+  return 0;
+}
+
+int send_list_repl(struct new_connection *conn, struct channel *channel_to_send){
+  char *channel_name = (*channel_to_send).name;
+  char *channel_topic = (*channel_to_send).topic;
+  char num_users[10];
+  sprintf(num_users, "%d", *(*channel_to_send).num_users);
+
+  int msglen = strlen(channel_name) + 1 + strlen(num_users) + 2 + strlen(channel_topic) + 1;
+  char msg[msglen];
+  sprintf(msg, "%s %s :%s", channel_name, num_users, channel_topic);
+  send_message(conn, msg, 322);
+  return 0;
+}
+
+int handle_join(struct new_connection *conn, char *channel_to_join){
+  /* see if channel exists ... */
+  struct channel *searched_channel = search_channels(channels, channel_to_join);
+  if (searched_channel == NULL){
+    int msglen = strlen(channel_to_join) + 1 + 17 + 1;
+    char msg[msglen];
+    sprintf(msg, "%s :No such channel", channel_to_join);
+    send_message(conn, msg, 403);
+    return 0;
+  }
+  else {
+    add_user(searched_channel, conn);
+    send_topic(conn, searched_channel);
+    handle_names(conn, channel_to_join);
+  }
+  return 0;
+}
+
+int add_user(struct channel *channel, struct new_connection *user){
+  insert_element(user, (*channel).users);
+  return 0;
+}
+
+int send_topic(struct new_connection *conn, struct channel *channel){
+  /* check if topic has been set */
+  if (*(*channel).topic == 0){
+    return 0;
+  }
+  char *topic = (*channel).topic;
+  char *name = (*channel).name;
+  int msglen = strlen(name) + 2 + strlen(topic) + 1;
+  char msg[msglen];
+  sprintf(msg, "%s :%s", name, topic);
+  send_message(conn, msg, 332);
+  return 0;
+}
+
+int handle_names(struct new_connection *conn, char *params){
+  if (params == NULL){
+    /* send all ... */
+    if (channels.head != NULL){
+      struct channel_node *current = channels.head;
+      while (current != NULL){
+        struct channel *current_channel = (*current).channel_data;
+        send_name_message(conn, current_channel);
+        current = (*current).next;
+      }
+      /* send end of list message */
+      char *msg2 = "* :End of NAMES list";
+      send_message(conn, msg2, 366);
+    }
+  }
+  else { /* search for channel */
+    char *channel_name = params;
+    struct channel *searched_channel = search_channels(channels, channel_name);
+    if (searched_channel != NULL){
+      send_name_message(conn, searched_channel);
+    }
+    /* send end of list message */
+    int msg2len = strlen(channel_name) + 1 + 18 + 1;
+    char msg2[msg2len];
+    sprintf(msg2, "%s :End of NAMES list", channel_name);
+    send_message(conn, msg2, 366);
+  }
+
+  return 0;
+}
+
+int send_name_message(struct new_connection *conn, struct channel *channel){
+  char *nick_list = get_nick_list(channel);
+  char *channel_name = (*channel).name;
+  int msglen = 2 + strlen(channel_name) + 2 + strlen(nick_list) + 1;
+  char msg[msglen];
+  sprintf(msg, "= %s :%s", channel_name, nick_list);
+  send_message(conn, msg, 353);
+  free(nick_list);
+  return 0;
+}
+
+char *get_nick_list(struct channel *channel){
+  /* set up stuff based on MAX_NICK */
+  int len_estimate = *(*channel).num_users*(MAX_NICK+1);
+  char *nicks = malloc(len_estimate);
+  int current_index = 0;
+  struct linked_list user_list = *(*channel).users;
+  if (user_list.head != NULL){
+    /* loop through connected users and copy nick to buffer */
+    struct node *current = user_list.head;
+    while (current != NULL){
+      char *current_nick = (*(*current).connected_user).nick;
+      int nick_length = strlen(current_nick);
+      sprintf(&nicks[current_index], "%s ", current_nick);
+      current_index = current_index + nick_length + 1;
+      current = (*current).next;
+    }
+    nicks[current_index-1] = '\0';
+  }
+  return nicks;
+}
+
+int send_channelmsg(struct new_connection *conn, struct channel *dest_channel, char *message){
+  /* check permission for channel */
+  int perm = check_channel_permission(conn, dest_channel);
+  if (perm == 0){
+    int msglen = strlen((*dest_channel).name) + 24 + 1;
+    char msg[msglen];
+    sprintf(msg, "%s :Cannot send to channel", (*dest_channel).name);
+    send_message(conn, msg, 404);
+    return 0;
+  }
+
+  /* get user list and check if empty */
+  struct linked_list *user_list = (*dest_channel).users;
+  if ((*user_list).head == NULL){
+    return 0;
+  }
+  else {
+    struct node *current = (*user_list).head;
+    /* loop through channel members and send */
+    while (current != NULL){
+      struct new_connection *current_connection = (*current).connected_user;
+      send_privmsg(conn, current_connection, message);
+      current = (*current).next;
+    }
+    return 0;
+  }
+}
+
+int check_channel_permission(struct new_connection *conn, struct channel *chann){
+  /* check if user in channel */
+  struct linked_list *channel_members = (*chann).users;
+  struct new_connection *found_connection = search(*channel_members, (*conn).nick);
+  if (found_connection != NULL){
+    return 1;
+  }
+  return 0;
+}
+
+int send_channelnotice(struct new_connection *conn, struct channel *dest_channel, char *message){
+  /* check permission for channel */
+  int perm = check_channel_permission(conn, dest_channel);
+  if (perm == 0){
+    return 0; /* no error messages !! */
+  }
+
+  /* get user list and check if empty */
+  struct linked_list *user_list = (*dest_channel).users;
+  if ((*user_list).head == NULL){
+    return 0;
+  }
+  else {
+    struct node *current = (*user_list).head;
+    /* loop through channel members and send */
+    while (current != NULL){
+      struct new_connection *current_connection = (*current).connected_user;
+      send_privmsg(conn, current_connection, message);
+      current = (*current).next;
+    }
+    return 0;
+  }
 }
