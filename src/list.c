@@ -83,10 +83,13 @@ struct channel *search_channels(struct channel_list list, char *search_channel_n
 
 void delete_element(struct linked_list *list, char *name_to_delete){
   struct node *pointer1 = (*list).head;
+  if (pointer1 == NULL){
+    return;
+  }
   if (strcmp(name_to_delete, (*(*pointer1).connected_user).nick) == 0){
-    chilog(INFO, "Name found for deletion\n");
     (*list).head = (*pointer1).next;
     free(pointer1);
+    return;
   }
   else{
     struct node *pointer2 = (*pointer1).next;
@@ -95,6 +98,7 @@ void delete_element(struct linked_list *list, char *name_to_delete){
         chilog(INFO, "Name found for deletion\n");
         (*pointer1).next = (*pointer2).next;
         free(pointer2);
+        return;
       }
       pointer1 = pointer2;
       pointer2 = (*pointer1).next;
