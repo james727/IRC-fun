@@ -20,3 +20,6 @@ There are several files of note in the 'src' folder, including:
 2. list.c - contains an implementation of a linked list for storing active users and channels, along with some specialized functions for each
 3. connection.h - contains the prototype of the struct used to store user data
 4. channel.h - contains the prototype of the struct used to store channel data
+
+#Attributions
+Requirements and testing framework based on the project outline made available by the University of Chicago at http://chi.cs.uchicago.edu/chirc/index.html
