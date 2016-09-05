@@ -107,6 +107,15 @@ int send_nick_updates(struct new_connection *conn, char *new_nick);
 int send_raw_message_to_all_user_channels(struct new_connection *conn, char *msg);
 int leave_all_channels(struct new_connection *conn);
 int broadcast_quit_to_channels(struct new_connection *conn, char *message);
+int send_whoischannels(struct new_connection *conn, struct new_connection *whois_conn);
+int set_up_test_channels(void);
+int send_join_updates(struct new_connection *conn, struct channel *chann);
+int send_privmsg_channel(struct new_connection *conn, struct new_connection *dest_conn, char *channel_name, char *msg);
+int send_part_updates(struct new_connection *conn, struct channel *chann, char *message);
+int send_topic_update(struct new_connection *conn, struct channel *chann, char *new_topic);
+int send_mode_update(struct new_connection *conn, struct channel *chann, char *mode_string);
+int send_channel_user_mode_update(struct new_connection *conn, struct channel *chann, char *mode_string, char *nick);
+
 
 int current_users = 0;
 int current_unknown_connections = 0;
@@ -190,16 +199,6 @@ int main(int argc, char *argv[])
   /* set up list of clients */
   connections = *create_new_list();
 
-  /* set up 2 channels (for testing) */
-  char *channel1name = "#General";
-  char *channel2name = "#Random";
-  char *topic1 = "General discussion for the masses";
-  struct channel *channel1 = create_channel(channel1name, topic1);
-  struct channel *channel2 = create_channel(channel2name, NULL);
-  channels = *create_channel_list();
-  insert_channel(channel1, &channels);
-  insert_channel(channel2, &channels);
-
   /* socket fun */
   int sockfd = set_up_socket();
   bind_to_port(sockfd, port);
@@ -248,6 +247,19 @@ void listen_to_port(int sockfd){
     pthread_create(&new_thread, NULL, handle_new_connection, (void*) current_conn);
   }
 
+}
+
+int set_up_test_channels(void){
+  /* set up 2 channels (for testing) */
+  char *channel1name = "#General";
+  char *channel2name = "#Random";
+  char *topic1 = "General discussion for the masses";
+  struct channel *channel1 = create_channel(channel1name, topic1);
+  struct channel *channel2 = create_channel(channel2name, NULL);
+  channels = *create_channel_list();
+  insert_channel(channel1, &channels);
+  insert_channel(channel2, &channels);
+  return 0;
 }
 
 void *handle_new_connection(void *connection){
@@ -546,6 +558,32 @@ int send_privmsg(struct new_connection *conn, struct new_connection *dest_conn, 
   return 0;
 }
 
+int send_privmsg_channel(struct new_connection *conn, struct new_connection *dest_conn, char *channel_name, char *msg){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = 1 + strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, ":%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  char *pm = "PRIVMSG";
+
+  int msglen = strlen(uid) + 1 + strlen(pm) + 1 + strlen(channel_name) + 2 + strlen(msg) + 3;
+  char msg_final[msglen];
+  sprintf(msg_final, "%s %s %s :%s\r\n", uid, pm, channel_name, msg);
+  if (msglen > 512){
+    msg_final[510] = '\r';
+    msg_final[511] = '\n';
+    msglen = 512;
+  }
+  send(*((*dest_conn).newsockfd), msg_final, msglen, 0);
+
+  return 0;
+}
+
 int handle_quit(struct new_connection *conn, char *message){
   /* get hostname */
   struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
@@ -556,7 +594,7 @@ int handle_quit(struct new_connection *conn, char *message){
   int msglen = 13 + strlen((*client_host).h_name) + 1 + strlen(message);
   char msg[msglen];
   sprintf(msg, "Closing link %s %s", (*client_host).h_name, message);
-  broadcast_quit_to_channels(conn, message);
+  broadcast_quit_to_channels(conn, message+1);
   send_message(conn, msg, 0);
   --current_users;
   /* close connection */
@@ -565,9 +603,19 @@ int handle_quit(struct new_connection *conn, char *message){
 }
 
 int broadcast_quit_to_channels(struct new_connection *conn, char *message){
-  int msglen = 1 + strlen((*conn).nick) + 1 + 4 + 1 + 1 + strlen(message) + 1;
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  int msglen = 1 + strlen(uid) + 1 + 4 + 1 + 1 + strlen(message) + 1;
   char msg[msglen];
-  sprintf(msg, ":%s QUIT :%s", (*conn).nick, message);
+  sprintf(msg, ":%s QUIT :%s", uid, message);
   send_raw_message_to_all_user_channels(conn, msg);
   return 0;
 }
@@ -604,10 +652,88 @@ int handle_nick(struct new_connection *conn, char *nick_params){
 }
 
 int send_nick_updates(struct new_connection *conn, char *new_nick){
-  int msglen = 1 + strlen((*conn).nick) + 1 + 4 + 1 + strlen(new_nick);
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  int msglen = 1 + strlen(uid) + 1 + 4 + 1 + 1 + strlen(new_nick);
   char msg[msglen];
-  sprintf(msg, ":%s NICK %s", (*conn).nick, new_nick);
+  sprintf(msg, ":%s NICK :%s", uid, new_nick);
   send_raw_message_to_all_user_channels(conn, msg);
+  return 0;
+}
+
+int send_join_updates(struct new_connection *conn, struct channel *chann){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  int msglen = 1+ strlen(uid) + 1 + 4 + 1 + strlen((*chann).name);
+  char msg[msglen];
+  sprintf(msg, ":%s JOIN %s", uid, (*chann).name);
+  relay_raw_message_to_channel(chann, msg);
+  return 0;
+}
+
+int send_part_updates(struct new_connection *conn, struct channel *chann, char *message){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  if (message != NULL){
+    int msglen = 1+ strlen(uid) + 1 + 4 + 1 + strlen((*chann).name) + 2 + strlen(message) + 1;
+    char msg[msglen];
+    sprintf(msg, ":%s PART %s :%s", uid, (*chann).name, message);
+    relay_raw_message_to_channel(chann, msg);
+    return 0;
+  }
+  int msglen = 1+ strlen(uid) + 1 + 4 + 1 + strlen((*chann).name) + 1;
+  char msg[msglen];
+  sprintf(msg, ":%s PART %s", uid, (*chann).name);
+  relay_raw_message_to_channel(chann, msg);
+  return 0;
+}
+
+int send_topic_update(struct new_connection *conn, struct channel *chann, char *new_topic){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  if (new_topic != NULL){
+    int msglen = 1+ strlen(uid) + 1 + 5 + 1 + strlen((*chann).name) + 2 + strlen(new_topic) + 1;
+    char msg[msglen];
+    sprintf(msg, ":%s TOPIC %s :%s", uid, (*chann).name, new_topic);
+    relay_raw_message_to_channel(chann, msg);
+    return 0;
+  }
+  int msglen = 1+ strlen(uid) + 1 + 5 + 1 + strlen((*chann).name) + 1;
+  char msg[msglen];
+  sprintf(msg, ":%s TOPIC %s", uid, (*chann).name);
+  relay_raw_message_to_channel(chann, msg);
   return 0;
 }
 
@@ -820,6 +946,54 @@ int handle_whois(struct new_connection *conn, char *params){
   return 0;
 }
 
+int send_whoischannels(struct new_connection *conn, struct new_connection *whois_conn){
+  /* initialize variables */
+  char *nick = (*whois_conn).nick;
+  struct channel_node *current = channels.head;
+  char channel_list[MAX_MESSAGE];
+  int channel_counter = 0;
+  int buffer_index = 0;
+  /* we will loop through channels and check if user is in them, printing to the channel_list buffer as needed */
+  while (current != NULL){
+    struct channel *current_channel = (*current).channel_data;
+    struct linked_list *current_users = (*current_channel).users;
+    struct new_connection *user_connection = search(*current_users, nick);
+    if (user_connection != NULL){
+      ++channel_counter;
+      struct linked_list *operators = (*current_channel).operators;
+      struct linked_list *voices = (*current_channel).voices;
+      struct new_connection *is_operator = search(*operators, nick);
+      char *prepend = "";
+      if (is_operator != NULL){
+        prepend = "@";
+      }
+      else{
+        struct new_connection *is_voice = search(*voices, nick);
+        if (is_voice != NULL){
+          prepend = "+";
+        }
+      }
+      int chunklen = strlen(prepend) + strlen((*current_channel).name) + 1;
+      sprintf(&channel_list[buffer_index], "%s%s ", prepend, (*current_channel).name);
+      buffer_index = buffer_index + chunklen;
+    }
+    current = (*current).next;
+  }
+
+  /* check if user is in any channels */
+  if (channel_counter == 0){
+    channel_list[buffer_index] = '\0';
+  }
+  else {
+    channel_list[buffer_index] = '\0';
+  }
+  int msglen = strlen((*whois_conn).nick) + 2 + strlen(channel_list) + 1;
+  char msg[msglen];
+  sprintf(msg, "%s :%s", (*whois_conn).nick, channel_list);
+  send_message(conn, msg, 319);
+  return 0;
+}
+
 int send_whois(struct new_connection *conn, struct new_connection *whois_conn){
   /* set up outputs for 1st reply */
   char host_addr[MAX_HOST];
@@ -838,6 +1012,9 @@ int send_whois(struct new_connection *conn, struct new_connection *whois_conn){
   sprintf(msg1, "%s %s %s * :%s", whoisnick, whoisuser, host_addr, whoisname);
   send_message(conn, msg1, 311);
 
+  /* send whoischannels (too long an annoying to put in this function) */
+  send_whoischannels(conn, whois_conn);
+
   /* set up 2nd reply (hostname first) */
   /* set up hostname */
   char server[MAX_HOST];
@@ -852,6 +1029,23 @@ int send_whois(struct new_connection *conn, struct new_connection *whois_conn){
   char msg2[msg2len];
   sprintf(msg2, "%s %s :%s", whoisnick, server, server_info);
   send_message(conn, msg2, 312);
+
+  /* send repl_away */
+  if (strlen((*whois_conn).away) > 0){
+    int awaymsglen = strlen((*whois_conn).nick) + 2 + strlen((*whois_conn).away) + 1;
+    char awaymsg[awaymsglen];
+    sprintf(awaymsg, "%s :%s", (*whois_conn).nick, (*whois_conn).away);
+    send_message(conn, awaymsg, 301);
+  }
+
+
+  /* send whois operator */
+  if (*(*whois_conn).is_global_operator == 1){
+    int opmsglen = strlen((*whois_conn).nick) + 20 + 1;
+    char opmsg[opmsglen];
+    sprintf(opmsg, "%s :is an IRC operator", (*whois_conn).nick);
+    send_message(conn, opmsg, 313);
+  }
 
   /* end of whois setup */
   int msg3len = strlen(whoisnick) + 19 + 1;
@@ -995,16 +1189,18 @@ int handle_join(struct new_connection *conn, char *channel_to_join){
   /* see if channel exists ... */
   struct channel *searched_channel = search_channels(channels, channel_to_join);
   if (searched_channel == NULL){
-    /*int msglen = strlen(channel_to_join) + 1 + 17 + 1;
-    char msg[msglen];
-    sprintf(msg, "%s :No such channel", channel_to_join);
-    send_message(conn, msg, 403);
-    return 0;*/
     searched_channel = create_channel(channel_to_join, NULL);
     insert_channel(searched_channel, &channels);
     add_channel_operator(searched_channel, (*conn).nick);
   }
+  /* check if already in channel */
+  struct linked_list *users = (*searched_channel).users;
+  struct new_connection *in_channel = search(*users, (*conn).nick);
+  if (in_channel != NULL){
+    return 0;
+  }
   add_user(searched_channel, conn);
+  send_join_updates(conn, searched_channel);
   send_topic(conn, searched_channel);
   handle_names(conn, channel_to_join);
   return 0;
@@ -1020,7 +1216,15 @@ int add_user(struct channel *channel, struct new_connection *user){
 int handle_away(struct new_connection *conn, char *params){
   /* check if currently away */
   if (*(*conn).away == '\0'){
-    memcpy((*conn).away, params+1, strlen(params)-1);
+    if (params != NULL){
+      memcpy((*conn).away, params+1, strlen(params)-1);
+    }
+    else{
+      bzero((*conn).away, MAX_AWAY);
+      char *msg = ":You are no longer marked as being away";
+      send_message(conn, msg, 305);
+      return 0;
+    }
     char *msg = ":You have been marked as being away";
     send_message(conn, msg, 306);
   }
@@ -1045,10 +1249,14 @@ int handle_topic(struct new_connection *conn, char *params){
   /* check if channel exists */
   struct channel *channel = search_channels(channels, channel_name);
   if (channel == NULL){
-    int msglen = strlen(channel_name) + 1 + 17 + 1;
+    int msglen = strlen(channel_name) + 28 + 1;
+    char msg[msglen];
+    sprintf(msg, "%s :You're not on that channel", channel_name);
+    send_message(conn, msg, 442);
+    /*int msglen = strlen(channel_name) + 1 + 17 + 1;
     char msg[msglen];
     sprintf(msg, "%s :No such channel", channel_name);
-    send_message(conn, msg, 403);
+    send_message(conn, msg, 403);*/
     return 0;
   }
 
@@ -1083,6 +1291,7 @@ int update_topic(struct new_connection *conn, struct channel *chann, char *new_t
   if (op_perm == 1){
     bzero((*chann).topic, MAX_TOPIC);
     memcpy((*chann).topic, new_topic, strlen(new_topic));
+    send_topic_update(conn, chann, new_topic);
     return 0;
   }
   send_chanoprivneeded(conn, chann);
@@ -1125,13 +1334,13 @@ int handle_names(struct new_connection *conn, char *params){
         send_name_message(conn, current_channel);
         current = (*current).next;
       }
-      /* send name message for users not in channels */
-      send_name_message(conn, NULL);
-
-      /* send end of list message */
-      char *msg2 = "* :End of NAMES list";
-      send_message(conn, msg2, 366);
     }
+    /* send name message for users not in channels */
+    send_name_message(conn, NULL);
+
+    /* send end of list message */
+    char *msg2 = "* :End of NAMES list";
+    send_message(conn, msg2, 366);
   }
   else { /* search for channel */
     char *channel_name = params;
@@ -1152,11 +1361,15 @@ int handle_names(struct new_connection *conn, char *params){
 int send_name_message(struct new_connection *conn, struct channel *channel){
   if (channel == NULL){
     char *nick_list = get_nochan_users();
+    if (strlen(nick_list) == 0){
+      free(nick_list);
+      return 0;
+    }
     char *channel_name = "*";
     /* set up and send message */
     int msglen = 2 + strlen(channel_name) + 2 + strlen(nick_list) + 1;
     char msg[msglen];
-    sprintf(msg, "= %s :%s", channel_name, nick_list);
+    sprintf(msg, "* %s :%s", channel_name, nick_list);
     send_message(conn, msg, 353);
     free(nick_list);
   }
@@ -1253,7 +1466,9 @@ int send_channelmsg(struct new_connection *conn, struct channel *dest_channel, c
     /* loop through channel members and send */
     while (current != NULL){
       struct new_connection *current_connection = (*current).connected_user;
-      send_privmsg(conn, current_connection, message);
+      if ((*current_connection).nick != (*conn).nick){
+        send_privmsg_channel(conn, current_connection, (*dest_channel).name, message);
+      }
       current = (*current).next;
     }
     return 0;
@@ -1268,7 +1483,12 @@ int check_channel_permission(struct new_connection *conn, struct channel *chann)
     return 0;
   }
 
-  /* check if operator */
+  /* check if global operator */
+  if (*(*conn).is_global_operator == 1){
+    return 1;
+  }
+
+  /* check if channel operator */
   struct linked_list *operators = (*chann).operators;
   struct new_connection *found_operator = search(*operators, (*conn).nick);
   if (found_operator != NULL){
@@ -1308,7 +1528,9 @@ int send_channelnotice(struct new_connection *conn, struct channel *dest_channel
     /* loop through channel members and send */
     while (current != NULL){
       struct new_connection *current_connection = (*current).connected_user;
-      send_privmsg(conn, current_connection, message);
+      if ((*current_connection).nick != (*conn).nick){
+        send_privmsg_channel(conn, current_connection, (*dest_channel).name, message);
+      }
       current = (*current).next;
     }
     return 0;
@@ -1340,13 +1562,17 @@ int handle_part(struct new_connection *conn, char *message){
     send_message(conn, msg, 442);
     return 0;
   }
-
-  char *message_to_send = save+1; /* take off the colon :) */
-  leave_channel(conn, channel_to_leave, message_to_send);
+  if (save != NULL){
+    char *message_to_send = save+1; /* take off the colon :) */
+    leave_channel(conn, channel_to_leave, message_to_send);
+    return 0;
+  }
+  leave_channel(conn, channel_to_leave, NULL);
   return 0;
 }
 
 int leave_channel(struct new_connection *conn, struct channel *chann, char *message){
+  send_part_updates(conn, chann, message);
   struct linked_list *user_list = (*chann).users;
   delete_element(user_list, (*conn).nick);
   *(*chann).num_users = *(*chann).num_users - 1;
@@ -1527,6 +1753,7 @@ int handle_channel_mode_string(struct new_connection *conn, struct channel *chan
     *(*chann).topic_mode = 1;
   }
   else {
+    mode_string = mode_string+1;
     int msglen = strlen(mode_string) + 33 + strlen((*chann).name) + 1;
     char msg[msglen];
     sprintf(msg, "%s :is unknown mode char to me for %s", mode_string, (*chann).name);
@@ -1534,11 +1761,26 @@ int handle_channel_mode_string(struct new_connection *conn, struct channel *chan
     return 0;
   }
 
+  send_mode_update(conn, chann, mode_string);
+  return 0;
+}
+
+int send_mode_update(struct new_connection *conn, struct channel *chann, char *mode_string){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
   /* set up relay message */
   char *nick = (*conn).nick;
-  int msglen = 1 + strlen(nick) + 6 + strlen((*chann).name) + 2 + strlen(mode_string) + 1;
+  int msglen = 1 + strlen(uid) + 6 + strlen((*chann).name) + 1 + strlen(mode_string) + 1;
   char msg[msglen];
-  sprintf(msg, ":%s MODE %s :%s", nick, (*chann).name, mode_string);
+  sprintf(msg, ":%s MODE %s %s", uid, (*chann).name, mode_string);
 
   /* check if user in channel (need to relay message to him if not, otherwise will be sent in whole channel msg) */
   struct new_connection *user_in_channel = search(*(*chann).users, nick);
@@ -1604,6 +1846,7 @@ int handle_channel_user_mode(struct new_connection *conn, struct channel *chann,
     add_channel_voice(chann, nick);
   }
   else {
+    mode_string = mode_string + 1;
     int msglen = strlen(mode_string) + 33 + strlen((*chann).name) + 1;
     char msg[msglen];
     sprintf(msg, "%s :is unknown mode char to me for %s", mode_string, (*chann).name);
@@ -1612,13 +1855,28 @@ int handle_channel_user_mode(struct new_connection *conn, struct channel *chann,
   }
 
   /* set up relay message */
-  char *conn_nick = (*conn).nick;
-  int msglen = 1 + strlen(conn_nick) + 6 + strlen((*chann).name) + 1 + strlen(nick) + 2 + strlen(mode_string) + 1;
+  send_channel_user_mode_update(conn, chann, mode_string, nick);
+  return 0;
+}
+
+int send_channel_user_mode_update(struct new_connection *conn, struct channel *chann, char *mode_string, char *nick){
+  /* set up host message */
+  char host_addr[MAX_HOST];
+  struct hostent *client_host = gethostbyaddr(&(*(*conn).client_addr).sin_addr, sizeof(struct in_addr), AF_INET);
+  sprintf(host_addr, "%s", (*client_host).h_name);
+
+  /* set up user id */
+  int uid_l = strlen((*conn).nick)+ 1 + strlen((*conn).user)+ 1 + strlen(host_addr) + 1;
+  char uid[uid_l];
+  sprintf(uid, "%s!%s@%s", (*conn).nick, (*conn).user, host_addr);
+
+  /* set up relay message */
+  int msglen = 1 + strlen(uid) + 6 + strlen((*chann).name) + 1 + strlen(mode_string) + 1 + strlen(nick) + 1;
   char msg[msglen];
-  sprintf(msg, ":%s MODE %s %s :%s", conn_nick, (*chann).name, nick, mode_string);
+  sprintf(msg, ":%s MODE %s %s %s", uid, (*chann).name, mode_string, nick);
 
   /* check if user in channel (need to relay message to him if not, otherwise will be sent in whole channel msg) */
-  struct new_connection *user_in_channel = search(*(*chann).users, conn_nick);
+  struct new_connection *user_in_channel = search(*(*chann).users, (*conn).nick);
   if (user_in_channel == NULL){
     send(*((*conn).newsockfd), msg, msglen, 0);
   }
@@ -1641,6 +1899,12 @@ int handle_user_mode_string(struct new_connection *conn, char *mode_string){
   else if (strcmp(mode_string, "+o") == 0){
     return 0;
   }
+  else if (strcmp(mode_string, "+a") == 0){
+    return 0;
+  }
+  else if (strcmp(mode_string, "-a") == 0){
+    return 0;
+  }
   else {
     char *msg = ":Unknown MODE flag";
     send_message(conn, msg, 501);
@@ -1658,7 +1922,7 @@ int handle_user_mode_string(struct new_connection *conn, char *mode_string){
 int send_usernotinchannel(struct new_connection *conn, struct channel *chann, char *nick){
   int msglen = strlen(nick) + 1 + strlen((*chann).name) + 29 + 1;
   char msg[msglen];
-  sprintf(msg, "%s %s  :They aren't on that channel", nick, (*chann).name);
+  sprintf(msg, "%s %s :They aren't on that channel", nick, (*chann).name);
   send_message(conn, msg, 441);
   return 0;
 }
